@@ -1,0 +1,840 @@
+
+import { useState, useMemo, useEffect, useRef, useCallback, KeyboardEvent } from 'react';
+import { db } from '@/core/db';
+import { Product, InvoiceStatus, InvoiceItem, PaymentStatus, Supplier } from '@/types';
+import { useUI, useInventory, useAccounting } from '@/contexts/AppContext';
+import { useUIStore } from '@/store/useUIStore';
+import { ErrorManager } from '@/core/errors';
+import { useSalesStore } from '@/store/useSalesStore';
+import { authService } from '@features/auth/services/authService';
+import { InvoiceRepository } from '@/database/repositories/invoice.repository';
+import { SupplierRepository } from '@/database/repositories/SupplierRepository';
+import { priceIntelligenceService } from '@features/inventory/services/priceIntelligenceService';
+import { InvoiceWorkflowEngine } from '@features/sales/services/InvoiceWorkflowEngine';
+import { ExportService } from '@/services/data/exportService';
+import { predictionService } from '@features/ai/services/predictionService';
+import { auditLogService } from '@/services/audit/auditLog';
+import { useAppNotification } from '@/context/NotificationContext';
+import { DraftService } from '@/services/system/DraftService';
+import { reportCache } from '@features/reports/services/reportCacheService';
+import { ReportEngine } from '@/services/reports/reportEngine';
+
+const DRAFT_KEY = 'pharmaflow_sales_draft';
+
+export const useSales = (onNavigate?: (view: string, params?: Record<string, unknown>) => void) => {
+  const { addToast, currency, refreshGlobal } = useUI();
+  const { showNotification } = useAppNotification();
+  const { addInvoice, customers } = useAccounting();
+  const { products } = useInventory();
+  const { setEditingInvoiceId, editingInvoiceId } = useSalesStore();
+  const { systemStatus } = useUIStore();
+  const isRecovery = systemStatus === 'RECOVERY_MODE';
+  
+  const user = authService.getCurrentUser();
+  const isAdmin = user?.Role === 'Admin';
+  
+  const [items, setItems] = useState<InvoiceItem[]>([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isAutoSaving, setIsAutoSaving] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [savePhase, setSavePhase] = useState<'idle' | 'saving' | 'failed'>('idle');
+  const [isAdding, setIsAdding] = useState(false);
+  const [isDuplicate, setIsDuplicate] = useState(false);
+  const [hasDependencies, setHasDependencies] = useState(false);
+  
+  const [adjData, setAdjData] = useState({ discountPercent: 0, otherFees: 0, tax: 0 });
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [manualItemName, setManualItemName] = useState<string>('');
+  const [tempQty, setTempQty] = useState<number | string>('');
+  const [tempPrice, setTempPrice] = useState<number | string>('');
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  
+  const [tempExpiry, setTempExpiry] = useState<string>('');
+  const [tempNote, setTempNote] = useState<string>('');
+  const [categoryName, setCategoryName] = useState<string>('');
+  const [showSearchDropdown, setShowSearchDropdown] = useState(false);
+  const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const [isConfirmSaveOpen, setIsConfirmSaveOpen] = useState(false);
+  const [isAdjustmentsOpen, setIsAdjustmentsOpen] = useState(false);
+  const [isViewerOpen, setIsViewerOpen] = useState(false);
+  const [saveSuccessData, setSaveSuccessData] = useState<{
+    invoiceNumber: string;
+    totalAmount: number;
+    type: 'SALE' | 'PURCHASE';
+    date?: string;
+    partnerName?: string;
+    accountingStatus?: string;
+    inventoryStatus?: string;
+    balanceStatus?: string;
+  } | null>(null);
+
+  const [isRecoveryModalOpen, setIsRecoveryModalOpen] = useState(false);
+  const [recoveryDraftData, setRecoveryDraftData] = useState<any>(null);
+
+  const [customerSearchTerm, setCustomerSearchTerm] = useState('');
+  const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
+  const [isAddCustomerModalOpen, setIsAddCustomerModalOpen] = useState(false);
+  const [newCustomerName, setNewCustomerName] = useState('');
+
+  const [filteredProducts, setFilteredProducts] = useState<Product[]>([]);
+  const [filteredCustomers, setFilteredCustomers] = useState<Supplier[]>([]);
+  const [selectedCustomerIndex, setSelectedCustomerIndex] = useState(-1);
+  const [isSearchingCustomers, setIsSearchingCustomers] = useState(false);
+
+  const itemNameInputRef = useRef<HTMLInputElement>(null);
+  const qtyInputRef = useRef<HTMLInputElement>(null);
+  const priceInputRef = useRef<HTMLInputElement>(null);
+  const expiryInputRef = useRef<HTMLInputElement>(null);
+  const noteInputRef = useRef<HTMLInputElement>(null);
+  const categoryInputRef = useRef<HTMLSelectElement>(null);
+
+  const [header, setHeader] = useState({ 
+    invoice_number: '', customer_id: '', payment_method: 'Cash',
+    status: 'DRAFT' as InvoiceStatus, payment_status: 'Unpaid' as PaymentStatus,
+    date: new Date().toISOString().split('T')[0], isReturn: false,
+    notes: '', warehouse: '', attachment: ''
+  });
+
+  const resetInvoiceState = useCallback(async () => {
+    try {
+      const nextNum = await InvoiceRepository.generateInvoiceNumber();
+      setHeader({
+        invoice_number: nextNum,
+        customer_id: '',
+        payment_method: 'Cash',
+        status: 'DRAFT',
+        payment_status: 'Unpaid',
+        date: new Date().toISOString().split('T')[0],
+        isReturn: false,
+        notes: '',
+        warehouse: '',
+        attachment: ''
+      });
+      setItems([]);
+      setAdjData({ discountPercent: 0, otherFees: 0, tax: 0 });
+      setCustomerSearchTerm('');
+      setEditingInvoiceId(null);
+    } catch (e) {
+      console.error("resetInvoiceState failed:", e);
+    }
+  }, [setEditingInvoiceId]);
+
+  // Smart Prediction for Products
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      (async () => {
+        try {
+          if (manualItemName.trim()) {
+            const results = await predictionService.searchProducts(manualItemName);
+            // Filter products that exist in inventory with stock > 0
+            setFilteredProducts(results.filter(p => (p.StockQuantity || 0) > 0));
+          } else {
+            setFilteredProducts([]);
+          }
+        } catch (e) {
+          console.error("Product prediction failed:", e);
+        }
+      })().catch(err => console.error("[predictionService] Fatal:", err));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [manualItemName]);
+
+  // Smart Prediction for Customers from Dexie directly
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      (async () => {
+        const term = customerSearchTerm.trim();
+        if (term.length < 2) {
+          setFilteredCustomers([]);
+          return;
+        }
+
+        setIsSearchingCustomers(true);
+        try {
+          const results = await SupplierRepository.searchCustomers(term);
+
+          setFilteredCustomers(results);
+        } catch (err) {
+          console.error('Error searching customers:', err);
+          try {
+            // Fallback to local search
+            const localResults = await predictionService.searchCustomers(term);
+            setFilteredCustomers(localResults);
+          } catch (e2) {
+            console.error("Fallback search also failed:", e2);
+          }
+        } finally {
+          setIsSearchingCustomers(false);
+        }
+      })().catch(err => console.error("[CustomerSearch] Fatal:", err));
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [customerSearchTerm]);
+
+  // 1. Mount Effect: Check for unsaved local and database drafts for sales
+  const draftPromptCheckedRef = useRef(false);
+  useEffect(() => {
+    if (editingInvoiceId) return;
+
+    const checkDraft = async () => {
+      if (draftPromptCheckedRef.current) return;
+      draftPromptCheckedRef.current = true;
+      try {
+        const unfinished = await DraftService.getUnfinishedInvoiceDraft('SALE');
+        if (unfinished) {
+          setRecoveryDraftData(unfinished);
+          setIsRecoveryModalOpen(true);
+        } else {
+          const hasSavedDraft = await DraftService.hasDraft('sales');
+          if (hasSavedDraft) {
+            const draft = await DraftService.getDraft('sales');
+            if (draft && draft.items && draft.items.length > 0) {
+              setRecoveryDraftData(draft);
+              setIsRecoveryModalOpen(true);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load sales draft recovery status:', err);
+      }
+    };
+    checkDraft().catch(e => console.error("checkDraft error:", e));
+  }, [editingInvoiceId]);
+
+  const restoreDraft = useCallback(async () => {
+    if (recoveryDraftData) {
+      const data = recoveryDraftData.totals?.header ? recoveryDraftData.totals : (recoveryDraftData.payload || recoveryDraftData);
+      if (data) {
+        if (data.header) {
+          setHeader(data.header);
+        }
+        if (recoveryDraftData.items) {
+          setItems(recoveryDraftData.items);
+        } else if (data.items) {
+          setItems(data.items);
+        }
+        if (data.adjData) {
+          setAdjData(data.adjData);
+        } else if (data.totals?.adjData) {
+          setAdjData(data.totals.adjData);
+        } else if (recoveryDraftData.totals?.adjData) {
+          setAdjData(recoveryDraftData.totals.adjData);
+        }
+        if (recoveryDraftData.partner?.partnerName) {
+          setCustomerSearchTerm(recoveryDraftData.partner.partnerName);
+        } else if (data.partner?.partnerName) {
+          setCustomerSearchTerm(data.partner.partnerName);
+        }
+      }
+      addToast("تمت استعادة المسودة الحية بنجاح 💾", "success");
+    }
+    setIsRecoveryModalOpen(false);
+    setRecoveryDraftData(null);
+  }, [recoveryDraftData, addToast]);
+
+  const discardDraft = useCallback(async () => {
+    try {
+      if (recoveryDraftData?.draftId) {
+        await DraftService.clearInvoiceDraft(recoveryDraftData.draftId);
+      }
+      await DraftService.clearDraft('sales');
+      const unfinished = await DraftService.getUnfinishedInvoiceDraft('SALE');
+      if (unfinished?.draftId) {
+        await DraftService.clearInvoiceDraft(unfinished.draftId);
+      }
+      addToast("تم حذف المسودة القديمة وبدء قيد جديد", "info");
+      await resetInvoiceState();
+    } catch (e) {
+      console.error("discardDraft failed:", e);
+    } finally {
+      setIsRecoveryModalOpen(false);
+      setRecoveryDraftData(null);
+    }
+  }, [addToast, resetInvoiceState, recoveryDraftData]);
+
+  const handleCustomerSearch = useCallback((val: string) => {
+    setCustomerSearchTerm(val);
+    setShowCustomerDropdown(true);
+    setSelectedCustomerIndex(-1);
+  }, []);
+
+  const handleCustomerKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelectedCustomerIndex(prev => Math.min(prev + 1, filteredCustomers.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelectedCustomerIndex(prev => Math.max(prev - 1, -1));
+    } else if (e.key === 'Enter') {
+      if (selectedCustomerIndex >= 0) {
+        e.preventDefault();
+        const found = filteredCustomers[selectedCustomerIndex];
+        if (found) selectCustomer(found);
+      }
+    } else if (e.key === 'Escape') {
+      setShowCustomerDropdown(false);
+      setSelectedCustomerIndex(-1);
+    }
+  }, [filteredCustomers, selectedCustomerIndex]);
+
+  const selectCustomer = useCallback((c: Supplier) => {
+    setHeader(prev => ({ ...prev, customer_id: c.id }));
+    setCustomerSearchTerm(c.Supplier_Name || c.name || '');
+    setShowCustomerDropdown(false);
+  }, []);
+
+  const handleCustomerBlur = useCallback(() => {
+    setTimeout(() => {
+      setShowCustomerDropdown(false);
+      if (customerSearchTerm && !customers.find(c => c.Supplier_Name === customerSearchTerm)) {
+        setNewCustomerName(customerSearchTerm);
+        setIsAddCustomerModalOpen(true);
+      }
+    }, 200);
+  }, [customerSearchTerm, customers]);
+
+  const confirmAddCustomer = useCallback(async () => {
+    try {
+      const newId = `CUS-${Date.now()}`;
+      const newCus: Supplier = {
+        id: newId,
+        Supplier_ID: newId,
+        Supplier_Name: newCustomerName,
+        Phone: '',
+        Address: '',
+        balance: 0,
+        openingBalance: 0,
+        Is_Active: true,
+        Created_At: new Date().toISOString()
+      };
+      
+      await db.saveCustomer(newCus);
+      await refreshGlobal();
+      
+      setHeader(prev => ({ ...prev, customer_id: newId }));
+      setCustomerSearchTerm(newCustomerName);
+      setIsAddCustomerModalOpen(false);
+      addToast(`تم إضافة العميل ${newCustomerName} بنجاح`, "success");
+    } catch (error) {
+      console.error("Failed to add customer", error);
+      addToast("فشل في إضافة العميل", "error");
+    }
+  }, [newCustomerName, refreshGlobal, addToast]);
+
+  const cancelAddCustomer = useCallback(() => {
+    setIsAddCustomerModalOpen(false);
+    setCustomerSearchTerm('');
+    setHeader(prev => ({ ...prev, customer_id: '' }));
+  }, []);
+
+  const [isPeriodLockedStatus, setIsPeriodLockedStatus] = useState(false);
+  
+  useEffect(() => {
+    const checkLock = async () => {
+      try {
+        const locked = await db.isDateLocked(header.date || "");
+        setIsPeriodLockedStatus(locked);
+      } catch (e) {
+        console.error("checkLock failed:", e);
+      }
+    };
+    checkLock().catch(e => console.error("[useSales] checkLock fatal error:", e));
+  }, [header.date]);
+
+  const isLocked = useMemo(() => {
+    const isWorkflowLocked = InvoiceWorkflowEngine.isLocked(header.status);
+    const isPeriodLocked = isPeriodLockedStatus && !isAdmin;
+    return isWorkflowLocked || isPeriodLocked || hasDependencies;
+  }, [header.status, isPeriodLockedStatus, isAdmin, hasDependencies]);
+
+  useEffect(() => {
+    const init = async () => {
+      try {
+        if (editingInvoiceId) {
+          const inv = await InvoiceRepository.getUnifiedInvoice(editingInvoiceId);
+          const deps = await InvoiceRepository.checkHasDependencies(editingInvoiceId, 'SALE');
+          setHasDependencies(deps);
+
+          if (inv) {
+            const i = inv as any;
+            const h = {
+              invoice_number: String(i.invoiceNumber || i.id || ''),
+              customer_id: String(i.partnerId || i.customerId || ''),
+              payment_method: String(i.paymentStatus || 'Cash'),
+              status: (i.documentStatus || 'DRAFT') as InvoiceStatus,
+              payment_status: (i.financialStatus || 'Unpaid') as PaymentStatus,
+              date: String(i.date || '').split('T')[0],
+              isReturn: Boolean(i.isReturn),
+              notes: String(i.notes || ''),
+              attachment: String(i.attachment || ''),
+              warehouse: String(i.warehouse || '')
+            };
+            setHeader(h);
+            setItems(i.items || []);
+            return;
+          }
+        } else {
+          // RULE: everything empty, ONLY invoice_number is auto-filled
+          await resetInvoiceState();
+        }
+      } catch (e) {
+        console.error("Init useSales failed:", e);
+      }
+    };
+    init().catch(e => console.error("[useSales] Init failed:", e));
+  }, [editingInvoiceId, resetInvoiceState]);
+
+  useEffect(() => {
+    if (header.invoice_number) {
+      InvoiceRepository.isNumberDuplicate(header.invoice_number, 'SALE', editingInvoiceId)
+        .then(setIsDuplicate)
+        .catch(e => console.error("isDuplicate check failed:", e));
+    }
+  }, [header.invoice_number, editingInvoiceId]);
+
+  const vTotalSum = useMemo(() => {
+    const sub = items.reduce((acc, it) => acc + (it.sum || 0), 0);
+    return sub - (sub * (adjData.discountPercent / 100)) + adjData.otherFees + adjData.tax;
+  }, [items, adjData]);
+
+  // 2. Smart Auto Save Draft Engine (Task 5 / Phase 5.2.5-C)
+  // Backup Interval: Auto-save draft every 5 seconds
+  useEffect(() => {
+    if (editingInvoiceId) return;
+
+    const interval = setInterval(async () => {
+      if (items.length === 0 && !header.customer_id && !header.notes) {
+        return;
+      }
+      try {
+        const partner = customers.find(c => c.id === header.customer_id);
+        const partnerName = partner ? partner.Supplier_Name : '';
+        await DraftService.saveInvoiceDraft('sales_draft_current', 'SALE', items, {
+          adjData,
+          subtotal: vTotalSum,
+          header,
+          partner: { partnerName }
+        });
+      } catch (e) {
+        console.error("Interval auto-save failed:", e);
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [items, header, adjData, vTotalSum, editingInvoiceId, customers]);
+
+  // Immediate save on specific changes: Add Item, Remove Item, Change Qty/Price, Change Customer, Change Notes
+  const prevItemsRef = useRef<InvoiceItem[]>(items);
+  const prevCustomerIdRef = useRef<string>(header.customer_id);
+  const prevNotesRef = useRef<string>(header.notes);
+  const prevAdjDataRef = useRef<{ discountPercent: number; otherFees: number; tax: number }>(adjData);
+
+  useEffect(() => {
+    if (editingInvoiceId) return;
+    if (items.length === 0 && !header.customer_id && !header.notes) {
+      return;
+    }
+
+    const itemsChanged = JSON.stringify(items) !== JSON.stringify(prevItemsRef.current);
+    const customerChanged = header.customer_id !== prevCustomerIdRef.current;
+    const notesChanged = header.notes !== prevNotesRef.current;
+    const adjChanged = JSON.stringify(adjData) !== JSON.stringify(prevAdjDataRef.current);
+
+    if (itemsChanged || customerChanged || notesChanged || adjChanged) {
+      prevItemsRef.current = items;
+      prevCustomerIdRef.current = header.customer_id;
+      prevNotesRef.current = header.notes;
+      prevAdjDataRef.current = adjData;
+
+      const triggerImmediateSave = async () => {
+        try {
+          const partner = customers.find(c => c.id === header.customer_id);
+          const partnerName = partner ? partner.Supplier_Name : '';
+          await DraftService.saveInvoiceDraft('sales_draft_current', 'SALE', items, {
+            adjData,
+            subtotal: vTotalSum,
+            header,
+            partner: { partnerName }
+          });
+        } catch (e) {
+          console.error("Immediate change-triggered auto-save failed:", e);
+        }
+      };
+      triggerImmediateSave().catch(e => console.error("Immediate save error:", e));
+    }
+  }, [items, header, adjData, vTotalSum, editingInvoiceId, customers]);
+
+  const persistToDB = useCallback(async () => {
+    try {
+      const isPeriodLocked = await db.isDateLocked(header.date || "") && !isAdmin;
+      if (isPeriodLocked || isDuplicate) return;
+      
+      setIsAutoSaving(true);
+      
+      if (isLocked) {
+        if (editingInvoiceId) {
+          await db.updateSaleNotes(editingInvoiceId, header.notes);
+          await db.updateSaleAttachment(editingInvoiceId, header.attachment || '');
+        }
+      } else if (header.status === 'DRAFT' || header.status === 'DRAFT_EDIT') {
+        if (items.length > 0) {
+          await addInvoice({
+            type: 'SALE',
+            payload: { 
+              customerId: header.customer_id, 
+              items, 
+              total: vTotalSum, 
+              invoiceId: header.invoice_number,
+              id: editingInvoiceId || undefined,
+              notes: header.notes,
+              attachment: header.attachment
+            },
+            options: { 
+              isCash: header.payment_method === 'Cash', 
+              paymentStatus: header.payment_method === 'Cash' ? 'Cash' : 'Credit',
+              isReturn: header.isReturn, 
+              currency,
+              invoiceStatus: header.status,
+              date: header.date
+            }
+          });
+        }
+      }
+    } catch (e) {
+      console.error("Auto-persist failed:", e);
+    } finally {
+      setIsAutoSaving(false);
+    }
+  }, [header, items, vTotalSum, isDuplicate, isAdmin, isLocked, editingInvoiceId, currency]);
+
+  const selectProduct = useCallback(async (p: Product) => {
+    try {
+      setSelectedProduct(p);
+      setManualItemName(p.Name || p.name);
+      setCategoryName(p.categoryName || (p as any).category || '');
+      setTempExpiry(p.ExpiryDate || p.expiryDate || '');
+      const suggestion = await priceIntelligenceService.getSuggestedPrice(p.id, 'SALE', header.customer_id);
+      setTempPrice(suggestion.suggestedPrice || p.UnitPrice || p.price || 0);
+      setTempQty(1);
+      
+      if ((p.StockQuantity || p.stock) !== undefined) {
+        const stock = p.StockQuantity || p.stock || 0;
+        addToast(`المخزون المتاح: ${stock}`, stock > 0 ? "info" : "error");
+      }
+      
+      setShowSearchDropdown(false);
+      setIsDetailModalOpen(true);
+    } catch (e) {
+      console.error("selectProduct failed:", e);
+    }
+  }, [header.customer_id, addToast, setCategoryName, setTempExpiry, setTempPrice, setTempQty, setSelectedProduct, setIsDetailModalOpen]);
+
+  const finalizeItemAdd = useCallback(async (closeModal = true) => {
+    try {
+      if (isLocked) return;
+      const name = manualItemName.trim();
+      if (!name) return;
+      
+      setIsAdding(true);
+      // Snappy feedback: use small timeout and then optimistic update
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      let prod = selectedProduct;
+      if (!prod || (prod.Name || prod.name || '').toLowerCase() !== name.toLowerCase()) {
+        prod = products.find(p => (p.Name || p.name || '').toLowerCase() === name.toLowerCase()) || null;
+      }
+      
+      const priceVal = typeof tempPrice === 'number' ? tempPrice : parseFloat(tempPrice) || 0;
+      const qtyVal = typeof tempQty === 'number' ? tempQty : Number(tempQty) || 1;
+
+      const newItem: any = {
+        id: db.generateId('SALE_DET'), parent_id: header.invoice_number,
+        product_id: prod?.id || db.generateId('NEW'),
+        name: prod?.Name || name, 
+        price: priceVal, 
+        qty: qtyVal,
+        sum: qtyVal * priceVal, 
+        row_order: items.length + 1,
+        expiryDate: tempExpiry || prod?.ExpiryDate || prod?.expiryDate || '',
+        category: categoryName || prod?.categoryName || (prod as any)?.category || '',
+        notes: tempNote
+      };
+      setItems(prev => [...prev, newItem]);
+      
+      if (closeModal) {
+        setIsDetailModalOpen(false);
+        setManualItemName(''); setTempQty(''); setTempPrice(''); setTempExpiry(''); setTempNote(''); setSelectedProduct(null);
+        setSelectedIndex(-1);
+        setShowSearchDropdown(false);
+        itemNameInputRef.current?.focus();
+      } else {
+        setManualItemName(''); setTempQty(''); setTempPrice(''); setTempExpiry(''); setTempNote(''); setSelectedProduct(null);
+        itemNameInputRef.current?.focus();
+      }
+      
+      setIsAdding(false);
+      addToast("تمت إضافة الصنف ✅", "success");
+    } catch (e) {
+      console.error("finalizeItemAdd failed:", e);
+      setIsAdding(false);
+    }
+  }, [isLocked, manualItemName, selectedProduct, products, items.length, header.invoice_number, tempPrice, tempQty, tempExpiry, tempNote, addToast]);
+
+  const handleSearchKeyDown = useCallback((e: KeyboardEvent) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelectedIndex(prev => Math.min(prev + 1, filteredProducts.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelectedIndex(prev => Math.max(prev - 1, -1));
+    } else if (e.key === 'Enter') {
+      if (selectedIndex >= 0) {
+        e.preventDefault();
+        const pToSelect = filteredProducts[selectedIndex];
+        if (pToSelect) {
+          selectProduct(pToSelect);
+        }
+      } else if (manualItemName) {
+        e.preventDefault();
+        qtyInputRef.current?.focus();
+      }
+    } else if (e.key === 'Escape') {
+      setShowSearchDropdown(false);
+      setSelectedIndex(-1);
+    }
+  }, [filteredProducts, selectedIndex, selectProduct, manualItemName]);
+
+  const updateItem = useCallback((id: string, field: keyof InvoiceItem, val: unknown) => {
+    if (isLocked) return;
+    setItems(prev => prev.map(item => {
+      if (item.id === id) {
+        const next = { ...item, [field]: val };
+        const q = typeof next.qty === 'number' ? next.qty : parseFloat(String(next.qty)) || 0;
+        const p = typeof next.price === 'number' ? next.price : parseFloat(String(next.price)) || 0;
+        next.sum = q * p;
+        return next;
+      }
+      return item;
+    }));
+  }, [isLocked]);
+
+  const removeItem = useCallback((id: string) => {
+    if (isLocked) return;
+    setItems(prev => prev.filter(item => item.id !== id));
+  }, [isLocked]);
+
+  const handlePost = useCallback(async () => {
+    if (savePhase === 'saving') return;
+    if (items.length === 0 || isLocked || isDuplicate) return;
+    
+    // OPTIMISTIC: Show success immediately and block UI only enough to navigate
+    showNotification('⌛ جاري طباعة الإيصال وترحيل الصندوق...', 'info');
+    addToast("جاري الحفظ والمزامنة... ⏳", "info");
+    const navPromise = new Promise(res => setTimeout(res, 500)); // Briefly show toast
+    
+    setIsSaving(true);
+    setSavePhase('saving');
+    try {
+      const nextStatus = InvoiceWorkflowEngine.determineNextStatus(vTotalSum, header.payment_method === 'Cash' ? vTotalSum : 0, 'PENDING');
+      
+      const savePromise = (async () => {
+        const r = await addInvoice({
+          type: 'SALE',
+          payload: { 
+            customerId: header.customer_id, 
+            items, 
+            total: vTotalSum, 
+            invoiceId: header.invoice_number,
+            id: editingInvoiceId || undefined,
+            notes: header.notes,
+            attachment: header.attachment,
+            date: header.date
+          },
+          options: { 
+            isCash: header.payment_method === 'Cash', 
+            paymentStatus: header.payment_method === 'Cash' ? 'Cash' : 'Credit',
+            invoiceStatus: nextStatus, 
+            isReturn: header.isReturn, 
+            currency,
+            date: header.date
+          }
+        });
+        await navPromise;
+        return r;
+      })();
+
+      // سباق برمجي: إما يتم الحفظ أو ينتهي الوقت خلال 15 ثانية ويفك تجميد الأزرار تلقائياً
+      const res = await Promise.race([
+        savePromise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('SAVE_TIMEOUT')), 15000)
+        )
+      ]) as { success: boolean; refId?: string };
+
+      if (res?.success) { 
+        setSavePhase('idle');
+        
+        // --- REAL-TIME ARCHIVE & REPORT SYNCHRONIZATION (PHASE 5.2.5-B) ---
+        // 1. Invalidate report cache
+        reportCache.purge();
+        // 2. Increment data version to signal components of data changes
+        db.incrementDataVersion();
+        // 3. Clear report engine state and refresh
+        await ReportEngine.refresh();
+        // 4. Force state synchronization across related providers/views
+        await refreshGlobal();
+
+        // Display success toast for 1 second only (from PHASE 5.2.5-A)
+        showNotification("Invoice Saved Successfully\nReturning to Dashboard...", 'success', 1000);
+        addToast("Invoice Saved Successfully\nReturning to Dashboard...", "success");
+        
+        await auditLogService.logSale(res.refId || editingInvoiceId || header.invoice_number, `Sale created: ${header.invoice_number}`, { items, total: vTotalSum });
+        localStorage.removeItem(DRAFT_KEY); 
+        
+        // Capture data for success modal 2.0 (Task 4) and dispose of draft (Task 5)
+        const partner = customers.find(c => c.id === header.customer_id);
+        const partnerName = partner ? partner.Supplier_Name : 'عميل مبيعات كاشير عام';
+        await DraftService.clearInvoiceDraft('sales_draft_current');
+        await DraftService.clearDraft('sales');
+
+        setSaveSuccessData({
+          invoiceNumber: header.invoice_number,
+          totalAmount: vTotalSum,
+          type: 'SALE',
+          date: header.date,
+          partnerName: partnerName,
+          accountingStatus: header.payment_method === 'Cash' ? 'ترحيل فوري بالقيد المزدوج' : 'ذمم مدينة مرحلة',
+          inventoryStatus: 'تم فك تجميد الوحدات وصرفها',
+          balanceStatus: 'محدث بالكامل (صندوق كاشير)'
+        });
+
+        setEditingInvoiceId(null); 
+        // Instantly generate a clean new invoice state to prevent dirty or stale state reuse
+        await resetInvoiceState();
+
+        // Delay navigation by 1 second to show the toast and feedback
+        setTimeout(() => {
+          try {
+            onNavigate?.('dashboard');
+          } catch (error) {
+            window.location.hash = '#/dashboard';
+          }
+        }, 1000);
+      }
+    } catch (err: unknown) {
+      setSavePhase('failed');
+      const normalized = ErrorManager.handleError(err, { module: 'SALES', action: 'SAVE_SALE', showToast: false });
+      const isTimeout = err instanceof Error && err.message === 'SAVE_TIMEOUT';
+      showNotification(
+        isTimeout 
+          ? '⚠️ تأخر حفظ الفاتورة؛ تم فك تجميد الواجهة حرصاً على استمرار العمل.' 
+          : '❌ تعذر حفظ فاتورة المبيعات', 
+        'error'
+      );
+      addToast(
+        isTimeout
+          ? 'تأخر حفظ الفاتورة سحابياً؛ تم فك تجميد الواجهة حرصاً على العمل المستمر. راجع مركز المزامنة.'
+          : normalized.arabicMessage,
+        'error'
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  }, [items, isLocked, isDuplicate, savePhase, vTotalSum, header, editingInvoiceId, currency, addInvoice, addToast, onNavigate, setEditingInvoiceId, showNotification]);
+
+  const getStatusLabel = (status: string) => {
+    switch(status) {
+      case 'Draft': return 'مسودة 📝';
+      case 'Saved': return 'مرحلة (مفتوحة) ✅';
+      case 'PartiallyPaid': return 'سداد جزئي 💸';
+      case 'Paid': return 'تم السداد 💰';
+      case 'Cancelled': return 'ملغاة 🚫';
+      case 'Returned': return 'مرتجع 🔄';
+      default: return status;
+    }
+  };
+
+  const handleExport = () => {
+    ExportService.exportToExcel(items, `SALE_${Date.now()}`, ['name', 'qty', 'price', 'sum']);
+  };
+
+  const printData = useMemo(() => ({
+    invoiceId: header.invoice_number,
+    items,
+    finalTotal: vTotalSum
+  }), [header.invoice_number, items, vTotalSum]);
+
+  return {
+    items, setItems,
+    searchTerm, setSearchTerm,
+    isAutoSaving,
+    isSaving,
+    isAdding,
+    isDuplicate,
+    hasDependencies,
+    adjData, setAdjData,
+    selectedProduct, setSelectedProduct,
+    manualItemName, setManualItemName,
+    tempQty, setTempQty,
+    tempPrice, setTempPrice,
+    selectedIndex, setSelectedIndex,
+    tempExpiry, setTempExpiry,
+    tempNote, setTempNote,
+    showSearchDropdown, setShowSearchDropdown,
+    isDetailModalOpen, setIsDetailModalOpen,
+    isConfirmSaveOpen, setIsConfirmSaveOpen,
+    isAdjustmentsOpen, setIsAdjustmentsOpen,
+    isViewerOpen, setIsViewerOpen,
+    itemNameInputRef,
+    qtyInputRef,
+    priceInputRef,
+    expiryInputRef,
+    noteInputRef,
+    categoryInputRef,
+    header, setHeader,
+    isPeriodLockedStatus,
+    isLocked,
+    vTotalSum,
+    persistToDB,
+    filteredProducts,
+    selectProduct,
+    finalizeItemAdd,
+    handleSearchKeyDown,
+    updateItem,
+    removeItem,
+    handlePost,
+    currency,
+    isAdmin,
+    categoryName,
+    setCategoryName,
+    isRecovery,
+    getStatusLabel,
+    handleExport,
+    printData,
+    customerSearchTerm, setCustomerSearchTerm,
+    showCustomerDropdown, setShowCustomerDropdown,
+    isAddCustomerModalOpen, setIsAddCustomerModalOpen,
+    newCustomerName, setNewCustomerName,
+    filteredCustomers,
+    handleCustomerSearch,
+    handleCustomerKeyDown,
+    selectedCustomerIndex,
+    isSearchingCustomers,
+    selectCustomer,
+    handleCustomerBlur,
+    confirmAddCustomer,
+    cancelAddCustomer,
+    resetInvoiceState,
+    customers,
+    savePhase,
+    setSavePhase,
+    saveSuccessData,
+    setSaveSuccessData,
+    isRecoveryModalOpen,
+    setIsRecoveryModalOpen,
+    recoveryDraftData,
+    restoreDraft,
+    discardDraft
+  };
+};

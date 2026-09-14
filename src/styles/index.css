@@ -1,0 +1,232 @@
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-cairo: "Cairo", sans-serif;
+}
+
+/* Global UI Overrides for PharmaFlow */
+
+@layer base {
+  html, body, #root {
+    width: 100%;
+    height: 100dvh;
+    min-height: 100dvh;
+    max-height: 100dvh;
+    overflow-x: hidden;
+    scroll-behavior: smooth;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  body {
+    @apply antialiased text-slate-800 dark:text-slate-100 bg-slate-50 dark:bg-slate-950 font-medium;
+    padding-top: env(safe-area-inset-top, 0px);
+    overscroll-behavior: none;
+  }
+  input, select, textarea {
+    font-size: 16px !important; /* Prevents auto-zoom on mobile focus */
+    min-width: 0;
+  }
+  html {
+    font-family: "Cairo", sans-serif;
+  }
+
+  /* Hide default calendar icon in date inputs */
+  input[type="date"]::-webkit-calendar-picker-indicator {
+    display: none;
+    -webkit-appearance: none;
+  }
+}
+
+.animate-spin-slow {
+  animation: spin 3s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Custom scrollbars */
+.custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-slate-200 rounded-full;
+}
+
+/* Systemic Enterprise Typography Override */
+
+th, thead th {
+  font-size: 14px !important;
+  font-weight: 700 !important;
+  color: #64748b !important; /* text-slate-500 */
+  padding: 14px 16px !important;
+}
+
+html.dark th, html.dark thead th {
+  color: #94a3b8 !important; /* dark:text-slate-400 */
+}
+
+td, tbody td {
+  font-size: 16px !important;
+  font-weight: 500 !important;
+  color: #1e293b !important; /* text-slate-800 */
+  padding: 14px 16px !important;
+}
+
+html.dark td, html.dark tbody td {
+  color: #e2e8f0 !important; /* dark:text-slate-200 */
+}
+
+/* Label styling */
+label {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: #64748b !important;
+}
+
+html.dark label {
+  color: #94a3b8 !important;
+}
+
+/* Large dashboard indicator styles */
+.dashboard-stat-title {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: #64748b !important;
+}
+
+html.dark .dashboard-stat-title {
+  color: #94a3b8 !important;
+}
+
+.dashboard-stat-value {
+  font-size: 24px !important;
+  font-weight: 700 !important;
+  color: #1E4D4D !important;
+}
+
+html.dark .dashboard-stat-value {
+  color: #34d399 !important;
+}
+
+/* Responsive layout for all screen sizes */
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+}
+
+.container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 1rem;
+  max-width: 100%;
+}
+
+@media (max-width: 640px) {
+  .container {
+    padding: 0.5rem;
+  }
+  .header, .buttons {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* GPU Acceleration & Rendering Optimizations for Low-Spec Phones */
+.gpu-accelerate {
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  perspective: 1000px;
+  will-change: transform, opacity;
+}
+
+/* Deferred Offscreen Rendering to Save RAM on Large Lists */
+.content-visibility-auto {
+  content-visibility: auto;
+  contain-intrinsic-size: 1px 400px;
+}
+
+/* Smooth Touch Scrolling */
+.smooth-scroll {
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+}
+
+/* Performance-friendly backdrop/filter fallback for low-end browsers */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-delay: -1ms !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    background-attachment: initial !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+  }
+}
+
+/* Print Media Styles */
+@media print {
+  @page {
+    size: auto;
+    margin: 12mm;
+  }
+
+  body, html, #root {
+    background: #ffffff !important;
+    color: #000000 !important;
+    overflow: visible !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .print\:hidden,
+  .no-print,
+  header.sticky,
+  aside,
+  nav {
+    display: none !important;
+  }
+
+  .print\:block {
+    display: block !important;
+  }
+
+  main, div {
+    box-shadow: none !important;
+  }
+
+  table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    page-break-inside: auto;
+  }
+
+  tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  tfoot {
+    display: table-footer-group;
+  }
+}
+
