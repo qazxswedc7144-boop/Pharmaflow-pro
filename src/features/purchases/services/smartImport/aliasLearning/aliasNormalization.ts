@@ -18,6 +18,24 @@ export class AliasNormalization {
   private static readonly ARABIC_TATWEEL = /\u0640/g;
 
   /**
+   * Converts Eastern Arabic (٠-٩) and Persian (۰-۹) digits to standard ASCII (0-9)
+   */
+  static convertDigits(text: string): string {
+    if (!text) return '';
+    return text
+      .replace(/[٠۰]/g, '0')
+      .replace(/[١۱]/g, '1')
+      .replace(/[٢۲]/g, '2')
+      .replace(/[٣۳]/g, '3')
+      .replace(/[٤۴]/g, '4')
+      .replace(/[٥۵]/g, '5')
+      .replace(/[٦۶]/g, '6')
+      .replace(/[٧۷]/g, '7')
+      .replace(/[٨۸]/g, '8')
+      .replace(/[٩۹]/g, '9');
+  }
+
+  /**
    * Common Pharmaceutical Dosage Form Mapping
    */
   private static readonly FORM_MAP: Record<string, string> = {
@@ -33,6 +51,7 @@ export class AliasNormalization {
     اقراص: 'tab',
     حبوب: 'tab',
     حبة: 'tab',
+    حبه: 'tab',
 
     // Capsules
     capsule: 'cap',
@@ -41,6 +60,7 @@ export class AliasNormalization {
     caps: 'cap',
     كبسول: 'cap',
     كبسولة: 'cap',
+    كبسوله: 'cap',
     كبسولات: 'cap',
 
     // Syrup / Liquid
@@ -69,8 +89,10 @@ export class AliasNormalization {
     im: 'inj',
     حقن: 'inj',
     حقنة: 'inj',
+    حقنه: 'inj',
     امبول: 'inj',
     أمبول: 'inj',
+    امبولات: 'inj',
     أمبولات: 'inj',
     فيل: 'inj',
     فيال: 'inj',
@@ -81,6 +103,7 @@ export class AliasNormalization {
     guttae: 'drops',
     gtt: 'drops',
     قطرة: 'drops',
+    قطره: 'drops',
     نقط: 'drops',
 
     // Creams / Ointments / Gel
@@ -124,7 +147,8 @@ export class AliasNormalization {
   static normalize(text: string): string {
     if (!text || typeof text !== 'string') return '';
 
-    let cleaned = text.trim();
+    // Convert Eastern Arabic and Persian digits first
+    let cleaned = this.convertDigits(text.trim());
 
     // 1. Remove Arabic Diacritics and Tatweel
     cleaned = cleaned.replace(this.ARABIC_DIACRITICS, '');
@@ -145,7 +169,7 @@ export class AliasNormalization {
     // e.g. "500 mg" -> "500mg", "1000 mg" -> "1000mg", "5 ml" -> "5ml", "200 mcg" -> "200mcg"
     cleaned = cleaned
       .replace(/(\d+(?:\.\d+)?)\s*(mg|g|mcg|ml|iu|gm|%|ug)\b/gi, '$1$2')
-      .replace(/(\d+(?:\.\d+)?)\s*(مجم|ملجم|جم|مل|مكجم|وحدة)\b/gi, '$1$2');
+      .replace(/(\d+(?:\.\d+)?)\s*(مجم|ملجم|ملغ|جم|غرام|جرام|مل|مكجم|وحدة)\b/gi, '$1$2');
 
     // 5. Replace non-alphanumeric separators (except dot/slash for dosages) with single spaces
     cleaned = cleaned.replace(/[^a-z0-9\u0621-\u064A./%]/gi, ' ');
@@ -157,37 +181,65 @@ export class AliasNormalization {
   }
 
   /**
+   * Canonicalizes product text for uniform comparison across languages, synonyms and forms
+   */
+  static canonicalize(text: string): string {
+    if (!text || typeof text !== 'string') return '';
+
+    let norm = this.normalize(text);
+
+    // Standardize Arabic units to English units
+    norm = norm
+      .replace(/(\d+(?:\.\d+)?)\s*(?:مجم|ملجم|ملغ|gm)\b/gi, '$1mg')
+      .replace(/(\d+(?:\.\d+)?)\s*(?:جم|غرام|جرام)\b/gi, '$1g')
+      .replace(/(\d+(?:\.\d+)?)\s*مل\b/gi, '$1ml')
+      .replace(/(\d+(?:\.\d+)?)\s*(?:مكجم|ug)\b/gi, '$1mcg');
+
+    // Convert 1g to 1000mg, 2g to 2000mg, etc. for dosage uniformity
+    norm = norm.replace(/\b(\d+(?:\.\d+)?)\s*g\b/gi, (_, val) => {
+      const num = parseFloat(val);
+      if (!isNaN(num) && num < 50) {
+        return `${Math.round(num * 1000)}mg`;
+      }
+      return `${val}g`;
+    });
+
+    // Standardize form tokens and strip leading Arabic article 'ال' on word tokens
+    const tokens = norm.split(' ');
+    const normalizedTokens = tokens.map(t => {
+      let word = t;
+      if (word.startsWith('ال') && word.length > 3) {
+        word = word.substring(2);
+      }
+      return this.FORM_MAP[word] || word;
+    });
+
+    return normalizedTokens.join(' ').replace(/\s+/g, ' ').trim();
+  }
+
+  /**
    * Normalizes an entity name (Supplier or Customer) by removing legal entity suffixes
    */
   static normalizeSupplierName(name: string): string {
     let norm = this.normalize(name);
 
-    // Remove common corporate suffixes in Arabic and English
-    const suffixes = [
-      /\bcompany\b/gi,
-      /\bco\b/gi,
-      /\bcorp\b/gi,
-      /\binc\b/gi,
-      /\bltd\b/gi,
-      /\bllc\b/gi,
-      /\bpharmaceuticals\b/gi,
-      /\bpharma\b/gi,
-      /\bindustries\b/gi,
-      /\bdistributors\b/gi,
-      /\bstore\b/gi,
-      /\bشركة\b/gi,
-      /\bمؤسسة\b/gi,
-      /\bللادوية\b/gi,
-      /\bللتجارة\b/gi,
-      /\bوالتوكيلات\b/gi,
-      /\bالمحدودة\b/gi
-    ];
+    // Remove common corporate suffixes in Arabic (normalized letters) and English
+    const stopWords = new Set([
+      'company', 'co', 'corp', 'inc', 'ltd', 'llc', 'pharmaceuticals', 'pharma', 
+      'industries', 'distributors', 'store', 'group',
+      'شركه', 'مؤسسه', 'للادويه', 'للتجاره', 'والتوكيلات', 'المحدوده', 'مجموعه',
+      'ادويه', 'تجاره', 'محدوده'
+    ]);
 
-    for (const suffix of suffixes) {
-      norm = norm.replace(suffix, ' ');
-    }
+    const tokens = norm.split(' ').filter(token => token && !stopWords.has(token));
+    return tokens.join(' ').trim();
+  }
 
-    return norm.replace(/\s+/g, ' ').trim();
+  /**
+   * Alias for normalizeSupplierName
+   */
+  static normalizeSupplier(name: string): string {
+    return this.normalizeSupplierName(name);
   }
 
   /**
@@ -203,16 +255,16 @@ export class AliasNormalization {
     };
 
     // 1. Extract Dosage (e.g. 500mg, 1000mg, 1g, 250mcg, 125mg/5ml, 5%, 5000iu)
-    const dosageRegex = /(\d+(?:\.\d+)?)\s*(mg|g|mcg|ml|iu|gm|%|ug|مجم|ملجم|جم|مل|مكجم)/i;
+    const dosageRegex = /(\d+(?:\.\d+)?)\s*(mg|g|mcg|ml|iu|gm|%|ug|مجم|ملجم|ملغ|جم|غرام|جرام|مل|مكجم)/i;
     const dosageMatch = rawText.match(dosageRegex) || normalizedText.match(dosageRegex);
 
-    if (dosageMatch) {
+    if (dosageMatch && dosageMatch[1] && dosageMatch[2]) {
       const val = parseFloat(dosageMatch[1]);
       let unit = dosageMatch[2].toLowerCase();
 
       // Normalize Arabic units to standard English
-      if (unit === 'مجم' || unit === 'ملجم' || unit === 'gm') unit = 'mg';
-      else if (unit === 'جم') unit = 'g';
+      if (unit === 'مجم' || unit === 'ملجم' || unit === 'ملغ' || unit === 'gm') unit = 'mg';
+      else if (unit === 'جم' || unit === 'غرام' || unit === 'جرام') unit = 'g';
       else if (unit === 'مل') unit = 'ml';
       else if (unit === 'مكجم' || unit === 'ug') unit = 'mcg';
       else if (unit === '%') unit = 'percent';
@@ -255,13 +307,21 @@ export class AliasNormalization {
     const packRegex = /(?:pack\s*of|\bx|\*|\bstrip\s*of)\s*(\d+)|\b(\d+)\s*(?:tabs?|caps?|amp|sachets?|ق)/i;
     const packMatch = rawText.match(packRegex);
     if (packMatch) {
-      const pSize = parseInt(packMatch[1] || packMatch[2], 10);
+      const rawNum = packMatch[1] || packMatch[2] || '';
+      const pSize = parseInt(rawNum, 10);
       if (!isNaN(pSize) && pSize > 0 && pSize <= 1000) {
         result.packSize = pSize;
       }
     }
 
     return result;
+  }
+
+  /**
+   * Alias for extractPharmaceuticalInfo
+   */
+  static extractStrengthAndForm(text: string): NormalizedPharmaceuticalInfo {
+    return this.extractPharmaceuticalInfo(text);
   }
 
   /**

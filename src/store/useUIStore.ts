@@ -8,6 +8,7 @@ export interface UIState {
   syncStatus: 'SYNCED' | 'PENDING' | 'CONFLICT' | 'ERROR';
   systemStatus: SystemStatus;
   isTrialBlockedModalOpen: boolean;
+  isSubscriptionOnboardingOpen: boolean;
   version: number;
   headerAction: React.ReactNode | null;
   addToast: (message: string, type?: ToastMessage['type']) => void;
@@ -16,6 +17,7 @@ export interface UIState {
   setSyncStatus: (syncStatus: 'SYNCED' | 'PENDING' | 'CONFLICT' | 'ERROR') => void;
   setSystemStatus: (systemStatus: SystemStatus) => void;
   setTrialBlockedModalOpen: (isOpen: boolean) => void;
+  setSubscriptionOnboardingOpen: (isOpen: boolean) => void;
   setHeaderAction: (action: React.ReactNode | null) => void;
   incrementVersion: () => void;
 }
@@ -26,6 +28,7 @@ export const useUIStore = create<UIState>((set) => ({
   syncStatus: 'SYNCED',
   systemStatus: 'ACTIVE',
   isTrialBlockedModalOpen: false,
+  isSubscriptionOnboardingOpen: false,
   version: 0,
   headerAction: null,
   addToast: (message, type = 'info') => {
@@ -37,6 +40,7 @@ export const useUIStore = create<UIState>((set) => ({
   setSyncStatus: (syncStatus) => set({ syncStatus }),
   setSystemStatus: (systemStatus) => set({ systemStatus }),
   setTrialBlockedModalOpen: (isTrialBlockedModalOpen) => set({ isTrialBlockedModalOpen }),
+  setSubscriptionOnboardingOpen: (isSubscriptionOnboardingOpen) => set({ isSubscriptionOnboardingOpen }),
   setHeaderAction: (headerAction) => set({ headerAction }),
   incrementVersion: () => set((state) => ({ version: state.version + 1 })),
 }));

@@ -121,4 +121,47 @@ export class AliasAuditService {
 
     return logs;
   }
+
+  /**
+   * Convenience alias for getLogs with limit
+   */
+  static async getTenantLogs(tenantId: string, limit: number = 50): Promise<AliasAuditLog[]> {
+    const logs = await this.getLogs(tenantId);
+    return logs.slice(-limit).reverse();
+  }
+
+  /**
+   * Convenience alias for log
+   */
+  static async logDecision(entry: {
+    tenantId: string;
+    branchId?: string;
+    userId?: string;
+    action: string;
+    aliasType?: any;
+    rawName?: string;
+    rawImportedValue?: string;
+    normalizedValue?: string;
+    supplierId?: string;
+    productId?: string;
+    reason?: string;
+    decision?: string;
+    score?: number;
+    confidence?: number;
+  }): Promise<AliasAuditLog> {
+    return this.log({
+      tenantId: entry.tenantId,
+      branchId: entry.branchId,
+      userId: entry.userId,
+      action: (entry.action as any) || 'PRODUCT_ALIAS_CONFIRMED',
+      aliasType: (entry.aliasType as any) || 'PRODUCT',
+      rawImportedValue: entry.rawImportedValue || entry.rawName || '',
+      normalizedValue: entry.normalizedValue || '',
+      decision: entry.decision || entry.reason || 'MANUAL_CONFIRM',
+      supplierId: entry.supplierId,
+      productId: entry.productId,
+      confidence: entry.confidence ?? entry.score ?? 1.0,
+      details: entry.reason
+    });
+  }
 }

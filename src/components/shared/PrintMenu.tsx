@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Printer, FileText, Table, ChevronDown, CheckCircle2, ShoppingBag, Layers } from 'lucide-react';
 import { ExportService } from '@/services/data/exportService';
 import { PrintEngine } from '@/services/print/PrintEngine';
+import { configurationService } from '@/services/config/configurationService';
 
 interface PrintMenuProps {
   data: any;
@@ -14,10 +15,10 @@ const PrintMenu: React.FC<PrintMenuProps> = ({ data, type, items }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [activeProfile, setActiveProfile] = useState<string>('80mm');
 
-  // Load active printer profile setting from local storage
+  // Load active printer profile setting from configurationService
   useEffect(() => {
-    const saved = localStorage.getItem('saas_printer_profile') || '80mm';
-    setActiveProfile(saved);
+    const saved = configurationService.getSync<string>('user.print_size') || '80mm';
+    setActiveProfile(String(saved));
   }, [isOpen]);
 
   const handleAction = async (action: 'PRINT_A4' | 'PRINT_THERMAL' | 'PRINT_58MM' | 'PRINT_80MM' | 'PDF' | 'EXCEL') => {

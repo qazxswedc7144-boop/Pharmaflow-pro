@@ -1,6 +1,14 @@
 
 export type BackupStatus = 'local' | 'cloud' | 'both' | 'synced' | 'failed' | 'unknown';
 
+export type RestoreSafetyMode = 'PREVIEW' | 'VALIDATE' | 'DRY_RUN' | 'RESTORE';
+
+export interface RestoreOptions {
+  mode?: RestoreSafetyMode;
+  targetTenantId?: string;
+  createSafetySnapshot?: boolean;
+}
+
 export interface BackupMetadata {
   id: string;
   name: string;
@@ -11,6 +19,10 @@ export interface BackupMetadata {
   encryption: boolean;
   checksum: string;
   version: string;
+  tenantId?: string;
+  branchId?: string;
+  createdBy?: string;
+  formatVersion?: string;
 }
 
 export interface BackupEntry {

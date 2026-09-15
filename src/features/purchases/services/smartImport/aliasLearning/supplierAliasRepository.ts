@@ -38,11 +38,15 @@ export class SupplierAliasRepository {
     // 1. Check in-memory store first
     for (const alias of this.memoryStore.values()) {
       if (alias.tenantId === safeTenant) {
-        if (normalizedTargets.size === 0 || normalizedTargets.has(alias.aliasNormalized)) {
+        const normSup = AliasNormalization.normalizeSupplier(alias.aliasRaw);
+        if (normalizedTargets.size === 0 || normalizedTargets.has(alias.aliasNormalized) || normalizedTargets.has(normSup)) {
           // If multiple suppliers have the same normalized alias, keep highest confidence
           const existing = resultMap.get(alias.aliasNormalized);
           if (!existing || alias.confidence > existing.confidence) {
             resultMap.set(alias.aliasNormalized, alias);
+            if (normSup) {
+              resultMap.set(normSup, alias);
+            }
           }
         }
       }
@@ -54,10 +58,14 @@ export class SupplierAliasRepository {
         const dbRecords: SupplierAlias[] = await db.supplierAliases.where('tenantId').equals(safeTenant).toArray();
         for (const alias of dbRecords) {
           this.memoryStore.set(this.buildKey(alias.tenantId, alias.supplierId, alias.aliasNormalized), alias);
-          if (normalizedTargets.size === 0 || normalizedTargets.has(alias.aliasNormalized)) {
+          const normSup = AliasNormalization.normalizeSupplier(alias.aliasRaw);
+          if (normalizedTargets.size === 0 || normalizedTargets.has(alias.aliasNormalized) || normalizedTargets.has(normSup)) {
             const existing = resultMap.get(alias.aliasNormalized);
             if (!existing || alias.confidence > existing.confidence) {
               resultMap.set(alias.aliasNormalized, alias);
+              if (normSup) {
+                resultMap.set(normSup, alias);
+              }
             }
           }
         }

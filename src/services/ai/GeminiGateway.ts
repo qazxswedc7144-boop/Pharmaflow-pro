@@ -12,6 +12,9 @@ import { PromptManager } from './PromptManager';
 import { aiContextBuilder } from './AIContextBuilder';
 import { AIResponseValidator } from './AIResponseValidator';
 import { AIUsageTracker } from './AIUsageTracker';
+import { AIPromptGuard } from './AIPromptGuard';
+import { FinancialGroundingService } from './FinancialGroundingService';
+import { unifiedTransport } from '@/shared/network/transport/unifiedTransport';
 
 export class GeminiGateway {
   private static DEFAULT_MODEL: AIModelTarget = 'gemini-3.6-flash';
@@ -63,7 +66,24 @@ export class GeminiGateway {
   public static async execute<T = string>(options: AIRequestOptions): Promise<AIResponse<T>> {
     const startTime = Date.now();
     const model = this.selectModel(options);
-    const userId = options.userContext.userId;
+    const userId = options.userContext?.userId;
+
+    // 0. Strict Tenant Verification
+    if (!options.userContext || !options.userContext.tenantId || typeof options.userContext.tenantId !== 'string') {
+      return this.buildFallbackResponse<T>(
+        model,
+        'تعارض أمني: معرف المنشأة (tenantId) مفقود في جلسة المستخدم المصادق عليها (TENANT_MISMATCH).',
+        Date.now() - startTime
+      );
+    }
+
+    if (!userId) {
+      return this.buildFallbackResponse<T>(
+        model,
+        'خطأ في المصادقة: معرف المستخدم إلزامي للوصول لخدمات الذكاء الاصطناعي.',
+        Date.now() - startTime
+      );
+    }
 
     // 1. Rate Limiting Check
     const rateCheck = this.checkRateLimit(userId);
@@ -166,6 +186,32 @@ export class GeminiGateway {
       );
     }
 
+    // 4.1. Prompt Injection Defense Check
+    const promptInspection = AIPromptGuard.inspectPrompt(finalPrompt);
+    if (!promptInspection.isClean) {
+      AIUsageTracker.logUsage({
+        userId,
+        branchId: options.userContext.branchId,
+        model,
+        promptId: options.promptId,
+        promptTokens: 0,
+        completionTokens: 0,
+        latencyMs: Date.now() - startTime,
+        status: 'blocked',
+        errorMessage: promptInspection.rejectionReason,
+      });
+
+      return this.buildFallbackResponse<T>(
+        model,
+        promptInspection.rejectionReason || 'تم حظر الطلب أمنياً لمنع تجاوز قواعد المحاسبة والتعليمات (PROMPT_INJECTION_DETECTED).',
+        Date.now() - startTime
+      );
+    }
+
+    // 4.2. Wrap User Query securely (User Prompt != System Instruction)
+    const sanitizedPrompt = promptInspection.sanitizedPrompt || finalPrompt;
+    const wrappedPrompt = AIPromptGuard.wrapUserQuery(sanitizedPrompt, options.userContext.tenantId);
+
     // 5. Server-Side Execution Proxy with Retry & Timeout
     try {
       const timeoutMs = options.timeoutMs || this.DEFAULT_TIMEOUT_MS;
@@ -173,8 +219,9 @@ export class GeminiGateway {
         {
           model,
           systemInstruction,
-          prompt: finalPrompt,
+          prompt: wrappedPrompt,
           temperature: options.temperature ?? 0.2,
+          tenantId: options.userContext.tenantId,
         },
         timeoutMs
       );
@@ -215,6 +262,18 @@ export class GeminiGateway {
         };
       }
 
+      // 7. Financial Grounding: Cross-verify AI claims against authoritative financial ledger
+      if (options.includeContexts?.includes('financials') || options.variables?.financialContext) {
+        const financialContext = options.variables?.financialContext as any;
+        const groundingResult = FinancialGroundingService.verifyFinancialText(
+          safetyCheck.sanitizedText || apiResponse.text,
+          financialContext
+        );
+        if (!groundingResult.isGrounded) {
+          safetyCheck.sanitizedText = groundingResult.groundedText;
+        }
+      }
+
       let parsedData: T | undefined;
       if (options.variables?.format === 'json') {
         const jsonValidation = AIResponseValidator.validateJSONResponse<T>(safetyCheck.sanitizedText || apiResponse.text);
@@ -251,6 +310,16 @@ export class GeminiGateway {
       };
     } catch (err: any) {
       const latencyMs = Date.now() - startTime;
+      let friendlyError = err.message || 'خطأ في الاتصال بالخادم';
+
+      if (err.message?.includes('RATE_LIMIT_EXCEEDED') || err.message?.includes('TENANT_QUOTA_EXCEEDED') || err.status === 429) {
+        friendlyError = 'تم بلوغ الحد الأقصى لاستهلاك الذكاء الاصطناعي للمنشأة (429 Quota Exceeded). يرجى الانتظار دقيقة واحدة.';
+      } else if (err.name === 'AbortError' || err.message?.includes('timeout') || err.message?.includes('TIMED_OUT')) {
+        friendlyError = 'انتهت مهلة استجابة خادم الذكاء الاصطناعي (20 ثانية) بأمان دون التأثير على النظام المالي.';
+      } else if (err.status === 503 || err.message?.includes('503')) {
+        friendlyError = 'خدمة الذكاء الاصطناعي غير متاحة مؤقتاً. كافة العمليات المحاسبية تعمل بشكل طبيعي ومستقل.';
+      }
+
       AIUsageTracker.logUsage({
         userId,
         branchId: options.userContext.branchId,
@@ -260,12 +329,12 @@ export class GeminiGateway {
         completionTokens: 0,
         latencyMs,
         status: 'error',
-        errorMessage: err.message,
+        errorMessage: friendlyError,
       });
 
       return this.buildFallbackResponse<T>(
         model,
-        `فشلت خدمة الذكاء الاصطناعي: ${err.message || 'خطأ في الاتصال بالحادم'}`,
+        `تنبيه خدمة الذكاء الاصطناعي: ${friendlyError}`,
         latencyMs
       );
     }
@@ -303,22 +372,19 @@ export class GeminiGateway {
     }
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs || this.DEFAULT_TIMEOUT_MS);
-
-      const res = await fetch('/api/ai/stream', {
+      const res = await unifiedTransport.request<Response>({
+        url: '/api/ai/stream',
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        profile: 'AI',
+        raw: true,
+        body: {
           model,
           systemInstruction,
           prompt: finalPrompt,
           temperature: options.temperature ?? 0.2,
-        }),
-        signal: controller.signal,
+        },
+        timeoutMs: options.timeoutMs || this.DEFAULT_TIMEOUT_MS
       });
-
-      clearTimeout(timeoutId);
 
       if (!res.ok || !res.body) {
         return {
@@ -395,51 +461,15 @@ export class GeminiGateway {
       systemInstruction: string;
       prompt: string;
       temperature: number;
+      tenantId?: string;
     },
     timeoutMs: number
   ): Promise<{ text: string; usage?: { promptTokens: number; completionTokens: number } }> {
-    let lastError: any;
-
-    for (let attempt = 1; attempt <= this.MAX_RETRIES; attempt++) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-        const res = await fetch('/api/ai/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeoutId);
-
-        if (res.ok) {
-          return await res.json();
-        }
-
-        const errorJson = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
-        lastError = new Error(errorJson.message || `خطأ الخادم (HTTP ${res.status})`);
-
-        // If client error (4xx except 429), don't retry
-        if (res.status >= 400 && res.status < 500 && res.status !== 429) {
-          throw lastError;
-        }
-      } catch (err: any) {
-        lastError = err;
-        if (err.name === 'AbortError') {
-          lastError = new Error('انتهت مهلة معالجة طلب الذكاء الاصطناعي (20 ثانية).');
-        }
-      }
-
-      // Exponential delay before retry (500ms, 1000ms, 2000ms)
-      if (attempt < this.MAX_RETRIES) {
-        const backoffMs = 500 * Math.pow(2, attempt - 1);
-        await new Promise((r) => setTimeout(r, backoffMs));
-      }
-    }
-
-    throw lastError || new Error('فشلت جميع محاولات الاتصال بخدمة الذكاء الاصطناعي.');
+    return await unifiedTransport.post<{ text: string; usage?: { promptTokens: number; completionTokens: number } }>(
+      '/api/ai/generate',
+      payload,
+      { profile: 'AI', timeoutMs, retries: this.MAX_RETRIES }
+    );
   }
 
   /**

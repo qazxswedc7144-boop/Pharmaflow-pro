@@ -1,7 +1,7 @@
 // server/modules/sync/sync-conflict.service.ts
 // Deterministic Conflict Detection Engine for Phase 8.3 Enterprise Synchronization
 
-import { SyncConflictCategory, SyncMutation } from "./sync.types";
+import { ConflictClassificationCategory, SyncConflictCategory, SyncMutation } from "./sync.types";
 
 export interface ConflictRecord {
   id: string;
@@ -9,9 +9,15 @@ export interface ConflictRecord {
   branchId?: string | null;
   mutationId: string;
   category: SyncConflictCategory;
+  classification?: ConflictClassificationCategory;
   entity?: string;
   entityType?: string;
   entityId: string;
+  deviceId?: string;
+  conflictingDeviceId?: string;
+  localVersion?: number;
+  remoteVersion?: number;
+  correlationId?: string;
   message?: string;
   conflictReason?: string;
   clientRecord?: Record<string, any>;
@@ -29,7 +35,68 @@ export class SyncConflictService {
   private static conflicts: ConflictRecord[] = [];
 
   /**
-   * Evaluates if a mutation conflicts with existing server-side state across the 10 categories
+   * Classifies an entity into one of the three architectural conflict categories
+   */
+  static classifyEntity(entity: string): ConflictClassificationCategory {
+    const upper = (entity || "").toUpperCase();
+    
+    // Category C: Financial Transactions (Strict immutability)
+    if (
+      [
+        "INVOICE",
+        "SALE",
+        "PAYMENT",
+        "RECEIPT",
+        "EXPENSE",
+        "JOURNAL_ENTRY",
+        "RETURN",
+        "CREDIT_NOTE",
+        "DEBIT_NOTE",
+        "VOUCHER",
+        "SETTLEMENT"
+      ].includes(upper)
+    ) {
+      return "FINANCIAL_TRANSACTION";
+    }
+
+    // Category B: Inventory Movements & Batches (Strict quantity & FIFO integrity)
+    if (
+      [
+        "INVENTORY_MOVEMENT",
+        "STOCK_ADJUSTMENT",
+        "INVENTORY_BATCH",
+        "BRANCH_TRANSFER",
+        "STOCK_TRANSFER",
+        "TRANSFER",
+        "DISPENSE"
+      ].includes(upper)
+    ) {
+      return "INVENTORY_EVENT";
+    }
+
+    // Category A: Mutable Non-Financial Metadata (Optimistic merge / LWW allowed)
+    return "METADATA_MUTABLE";
+  }
+
+  /**
+   * Returns classification and default resolution strategy for an entity
+   */
+  static getEntityClassification(entity: string): {
+    category: ConflictClassificationCategory;
+    defaultStrategy: string;
+  } {
+    const category = this.classifyEntity(entity);
+    const defaultStrategy =
+      category === "METADATA_MUTABLE"
+        ? "OPTIMISTIC_MERGE"
+        : category === "INVENTORY_EVENT"
+        ? "INVENTORY_RECONCILIATION"
+        : "IMMUTABLE_QUARANTINE";
+    return { category, defaultStrategy };
+  }
+
+  /**
+   * Evaluates if a mutation conflicts with existing server-side state across the categories
    */
   static evaluateConflict(params: {
     mutation: SyncMutation;
@@ -39,19 +106,23 @@ export class SyncConflictService {
     currentStock?: number;
     requiredStock?: number;
     isPeriodClosed?: boolean;
+    conflictingDeviceId?: string;
   }): {
     hasConflict: boolean;
     category?: SyncConflictCategory;
+    classification?: ConflictClassificationCategory;
     message?: string;
-    resolutionStrategy?: "SERVER_WINS" | "CLIENT_WINS" | "MANUAL_MERGE" | "RETRY_WITH_NEW_VERSION";
+    resolutionStrategy?: "SERVER_WINS" | "CLIENT_WINS" | "MANUAL_MERGE" | "RETRY_WITH_NEW_VERSION" | "OPTIMISTIC_MERGE";
   } {
     const { mutation, existingServerRecord, currentStock, requiredStock, isPeriodClosed } = params;
+    const classification = this.classifyEntity(mutation.entity);
 
     // 1. TENANT_CONFLICT: Record belongs to a different tenant
     if (existingServerRecord && existingServerRecord.tenantId && existingServerRecord.tenantId !== params.tenantId) {
       return {
         hasConflict: true,
         category: "TENANT_CONFLICT",
+        classification,
         message: "انتهاك عزل المنشآت: محاولة تعديل سجل يتبع منشأة أخرى.",
         resolutionStrategy: "SERVER_WINS"
       };
@@ -68,6 +139,7 @@ export class SyncConflictService {
       return {
         hasConflict: true,
         category: "BRANCH_CONFLICT",
+        classification,
         message: "انتهاك عزل الفروع: هذا السجل مقيد بفرع آخر ولا يسمح بتعديله من هذا الجهاز.",
         resolutionStrategy: "SERVER_WINS"
       };
@@ -78,75 +150,103 @@ export class SyncConflictService {
       return {
         hasConflict: true,
         category: "DELETED_RECORD_CONFLICT",
+        classification,
         message: "محاولة تعديل سجل محذوف أو مؤرشف مسبقاً في الخادم السحابي.",
         resolutionStrategy: "SERVER_WINS"
       };
     }
 
-    // 4. ACCOUNTING_CONFLICT: Trying to post or adjust records in a closed fiscal period or posted invoice
-    if (isPeriodClosed) {
-      return {
-        hasConflict: true,
-        category: "ACCOUNTING_CONFLICT",
-        message: "تعارض محاسبي: الفترة المالية مغلقة ومقفلة ضد أي تعديلات جديدة.",
-        resolutionStrategy: "SERVER_WINS"
-      };
-    }
+    // 4. Category C: IMMUTABLE FINANCIAL TRANSACTIONS
+    // Financial transactions once posted/committed CANNOT be mutated directly
+    if (classification === "FINANCIAL_TRANSACTION" && existingServerRecord) {
+      const isCommitted =
+        existingServerRecord.documentStatus === "POSTED" ||
+        existingServerRecord.status === "COMPLETED" ||
+        existingServerRecord.status === "PAID" ||
+        mutation.operation === "UPDATE" ||
+        mutation.operation === "DELETE";
 
-    if (existingServerRecord && existingServerRecord.documentStatus === "POSTED" && mutation.operation === "UPDATE") {
-      // Conservative handling for posted financial invoices
-      if (["INVOICE", "JOURNAL_ENTRY", "PAYMENT"].includes(mutation.entity)) {
+      if (isCommitted && (mutation.operation === "UPDATE" || mutation.operation === "DELETE")) {
         return {
           hasConflict: true,
-          category: "ACCOUNTING_CONFLICT",
-          message: "تعارض مالي: القيد/الفاتورة مرحلة ومثبتة دفترية في الخادم، يتطلب التعديل إجراء إشعار تسوية محاسبي.",
+          category: "IMMUTABLE_FINANCIAL_CONFLICT",
+          classification,
+          message: "المعاملات المالية المعتمدة غير قابلة للتعديل أو الحذف المباشر؛ يتطلب التصحيح إصدار معاملة تعويضية (إشعار دائن/مدين أو قيد عكسي).",
           resolutionStrategy: "MANUAL_MERGE"
         };
       }
     }
 
-    // 5. STOCK_CONFLICT: Insufficient stock on server for sale/transfer
+    // 5. ACCOUNTING_CONFLICT: Trying to post or adjust records in a closed fiscal period or unbalanced
+    if (isPeriodClosed) {
+      return {
+        hasConflict: true,
+        category: "ACCOUNTING_CONFLICT",
+        classification,
+        message: "تعارض محاسبي: الفترة المالية مغلقة ومقفلة ضد أي تعديلات جديدة.",
+        resolutionStrategy: "SERVER_WINS"
+      };
+    }
+
+    // 6. Category B: STOCK_CONFLICT: Insufficient stock on server for sale/transfer
     if (
       requiredStock !== undefined &&
       currentStock !== undefined &&
       currentStock < requiredStock &&
-      ["INVENTORY_MOVEMENT", "SALE_DISPENSE", "STOCK_OUT"].includes(mutation.operation)
+      ["INVENTORY_MOVEMENT", "SALE_DISPENSE", "STOCK_OUT", "TRANSFER"].includes(mutation.operation)
     ) {
       return {
         hasConflict: true,
         category: "STOCK_CONFLICT",
+        classification,
         message: `تعارض رصيد المخزون: الرصيد الفعلي في الخادم (${currentStock}) غير كافٍ لتنفيذ العملية المخصصة (${requiredStock}).`,
         resolutionStrategy: "MANUAL_MERGE"
       };
     }
 
-    // 6. VERSION_CONFLICT: Server has a higher version number than client mutation
+    // 7. VERSION_CONFLICT: Server has a higher version number than client mutation
     if (existingServerRecord && mutation.version !== undefined && existingServerRecord.version !== undefined) {
       if (existingServerRecord.version > mutation.version) {
         return {
           hasConflict: true,
           category: "VERSION_CONFLICT",
+          classification,
           message: `تعارض إصدار السجل: الخادم يحمل الإصدار (${existingServerRecord.version}) بينما الجهاز يحمل (${mutation.version}).`,
           resolutionStrategy: "RETRY_WITH_NEW_VERSION"
         };
       }
     }
 
-    // 7. SAME_RECORD_CONFLICT: Concurrent conflicting updates with conflicting timestamps
+    // 8. Category A: METADATA_MUTABLE Handling
+    if (classification === "METADATA_MUTABLE" && existingServerRecord && existingServerRecord.updatedAt && mutation.payload?.updatedAt) {
+      const serverTime = new Date(existingServerRecord.updatedAt).getTime();
+      const clientTime = new Date(mutation.payload.updatedAt).getTime();
+      if (serverTime > clientTime + 1000) {
+        // Safe to merge fields or let latest writer win for metadata
+        return {
+          hasConflict: false,
+          classification,
+          resolutionStrategy: "OPTIMISTIC_MERGE"
+        };
+      }
+    }
+
+    // 9. SAME_RECORD_CONFLICT: Concurrent conflicting updates with conflicting timestamps
     if (existingServerRecord && existingServerRecord.updatedAt && mutation.payload?.updatedAt) {
       const serverTime = new Date(existingServerRecord.updatedAt).getTime();
       const clientTime = new Date(mutation.payload.updatedAt).getTime();
-      if (serverTime > clientTime + 1000) { // 1s drift tolerance
+      if (serverTime > clientTime + 1000) {
         return {
           hasConflict: true,
           category: "SAME_RECORD_CONFLICT",
+          classification,
           message: "تم تحديث السجل على الخادم بواسطة طرف آخر بتوقيت أحدث.",
           resolutionStrategy: "SERVER_WINS"
         };
       }
     }
 
-    return { hasConflict: false };
+    return { hasConflict: false, classification };
   }
 
   /**
@@ -239,6 +339,12 @@ export class SyncConflictService {
     entityId: string;
     mutationId: string;
     category: SyncConflictCategory;
+    classification?: ConflictClassificationCategory;
+    deviceId?: string;
+    conflictingDeviceId?: string;
+    localVersion?: number;
+    remoteVersion?: number;
+    correlationId?: string;
     resolutionStrategy?: string;
     originalSnapshot?: Record<string, any>;
     incomingSnapshot?: Record<string, any>;
@@ -248,15 +354,24 @@ export class SyncConflictService {
     message?: string;
   }): ConflictRecord {
     const id = `CONF-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const entityType = record.entityType || record.entity || "GENERIC";
+    const classification = record.classification || this.classifyEntity(entityType);
+
     const conflict: ConflictRecord = {
       id,
       tenantId: record.tenantId,
       branchId: record.branchId,
-      entityType: record.entityType || record.entity || "GENERIC",
-      entity: record.entity || record.entityType || "GENERIC",
+      entityType,
+      entity: entityType,
       entityId: record.entityId,
       mutationId: record.mutationId,
       category: record.category,
+      classification,
+      deviceId: record.deviceId,
+      conflictingDeviceId: record.conflictingDeviceId,
+      localVersion: record.localVersion,
+      remoteVersion: record.remoteVersion,
+      correlationId: record.correlationId || `CORR-${Date.now()}`,
       resolutionStrategy: record.resolutionStrategy || "MANUAL_MERGE",
       originalSnapshot: record.originalSnapshot || record.serverRecord || {},
       incomingSnapshot: record.incomingSnapshot || record.clientRecord || {},
@@ -276,6 +391,25 @@ export class SyncConflictService {
     }
 
     return conflict;
+  }
+
+  /**
+   * Field-level optimistic merge for Category A (Non-financial mutable metadata)
+   */
+  static mergeMetadata(
+    original: Record<string, any>,
+    incoming: Record<string, any>,
+    protectedKeys: string[] = ["id", "tenantId", "branchId", "version", "createdAt"]
+  ): Record<string, any> {
+    const merged: Record<string, any> = { ...original };
+    for (const [key, value] of Object.entries(incoming)) {
+      if (!protectedKeys.includes(key) && value !== undefined && value !== null) {
+        merged[key] = value;
+      }
+    }
+    merged.updatedAt = new Date().toISOString();
+    merged.version = (original.version || 1) + 1;
+    return merged;
   }
 
   /**

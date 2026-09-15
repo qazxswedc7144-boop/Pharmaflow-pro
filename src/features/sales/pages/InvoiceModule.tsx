@@ -3,6 +3,8 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { db } from '@/core/db';
 import { Sale, InvoiceHistory, Purchase } from '@/types';
 import { InvoiceRepository } from '@/database/repositories/invoice.repository';
+import { WorkflowOrchestrator } from '@/core/workflow';
+import { salesCancellationWorkflow } from '@features/sales/workflows/SalesCancellationWorkflow';
 import { useUI } from '@/contexts/AppContext';
 import { useAppStore } from '@/hooks/useAppStore';
 import { Button, Badge, Modal } from '@/components/shared/SharedUI';
@@ -119,11 +121,17 @@ const InvoiceModule: React.FC<InvoiceModuleProps> = ({ lang, onNavigate }) => {
     try {
       const recordId = item.id;
       if (recordId) {
-        await db.invoices.update(recordId, { documentStatus: 'CANCELLED', status: 'CANCELLED' });
+        await WorkflowOrchestrator.execute(salesCancellationWorkflow, {
+          invoiceId: recordId,
+          reason: isAr ? "إلغاء عبر الأرشيف" : "Cancelled via archive"
+        });
         addToast(isAr ? "تم إلغاء المستند بنجاح" : "Invoice Cancelled", "success");
         refreshGlobal();
       }
-    } catch (err) { addToast("Error cancelling", "error"); }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      addToast(msg || "Error cancelling", "error");
+    }
   };
 
   const viewHistory = (e: React.MouseEvent, id: string) => {

@@ -1,4 +1,6 @@
 
+import { configurationService } from '@/services/config/configurationService';
+
 interface LearningItem {
   original: string;
   corrected: string;
@@ -7,18 +9,18 @@ interface LearningItem {
 export function saveLearning(original: string, corrected: string) {
   if (!original || !corrected || original === corrected) return;
   
-  const data: LearningItem[] = JSON.parse(localStorage.getItem('pharmaflow_ocr_learning') || '[]');
+  const data: LearningItem[] = configurationService.getSync<LearningItem[]>('pharmaflow_ocr_learning') || [];
   
   // Check if we already have this correction
   const exists = data.some(item => item.original === original && item.corrected === corrected);
   if (exists) return;
 
   data.push({ original, corrected });
-  localStorage.setItem('pharmaflow_ocr_learning', JSON.stringify(data));
+  configurationService.set('pharmaflow_ocr_learning', data).catch(() => {});
 }
 
 export function applyLearning(text: string): string {
-  const data: LearningItem[] = JSON.parse(localStorage.getItem('pharmaflow_ocr_learning') || '[]');
+  const data: LearningItem[] = configurationService.getSync<LearningItem[]>('pharmaflow_ocr_learning') || [];
   
   let result = text;
   data.forEach(item => {

@@ -8,6 +8,7 @@ import {
 } from './types';
 import { Product, Supplier } from '@/types';
 import { isValidExpiryDate } from '@/utils/expiryUtils';
+import { ResolutionPolicy } from '../domain/resolution.policy';
 
 export interface ValidationScopeContext {
   tenantId: string;
@@ -188,6 +189,29 @@ export class BatchDecisionValidator {
               sourceRowId: prod.sourceRowId,
               severity: 'ERROR'
             });
+          } else {
+            // Dosage and Pharmaceutical Form Safety Validation
+            const pName = matchedProd.Name || matchedProd.name || '';
+            const safety = ResolutionPolicy.evaluateDosageSafety(prod.importedProductName, pName);
+            if (safety.isConflict) {
+              if (prod.action === ProductResolutionAction.AUTO_MATCH) {
+                errors.push({
+                  field: `productDecisions[${prod.sourceRowId}].dosageSafety`,
+                  code: 'DOSAGE_SAFETY_CONFLICT',
+                  message: `يمنع الاعتماد التلقائي لوجود تعارض في الجرعة/الشكل الدوائي: "${prod.importedProductName}" مع "${pName}". ${safety.reason}`,
+                  sourceRowId: prod.sourceRowId,
+                  severity: 'ERROR'
+                });
+              } else {
+                warnings.push({
+                  field: `productDecisions[${prod.sourceRowId}].dosageSafety`,
+                  code: 'DOSAGE_SAFETY_WARNING',
+                  message: `تنبيه تعارض دوائي: "${prod.importedProductName}" مرتبط بـ "${pName}". ${safety.reason}`,
+                  sourceRowId: prod.sourceRowId,
+                  severity: 'WARNING'
+                });
+              }
+            }
           }
         }
       } else if (prod.action === ProductResolutionAction.CREATE_NEW) {

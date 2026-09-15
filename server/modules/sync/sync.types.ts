@@ -4,22 +4,38 @@
 export const SYNC_PROTOCOL_VERSION = 1;
 export const CLIENT_VERSION = "8.3.0";
 
-export type DeviceStatus = "ACTIVE" | "REVOKED" | "SUSPENDED" | "UNKNOWN";
+export type DeviceStatus = "ACTIVE" | "REVOKED" | "SUSPENDED" | "OFFLINE" | "SYNCING" | "STALE" | "UNKNOWN";
+export type DeviceSyncHealth = "HEALTHY" | "DEGRADED" | "UNHEALTHY" | "STALE";
+
+export interface VersionVector {
+  [deviceId: string]: number;
+}
 
 export interface DeviceIdentity {
   deviceId: string;
+  installationId?: string;
   deviceName: string;
   tenantId: string;
   branchId: string;
   userId: string;
   lastSeenAt: Date | string;
+  lastSeen?: string;
   appVersion: string;
   schemaVersion: number;
   status: DeviceStatus;
+  syncHealth?: DeviceSyncHealth;
+  lastSyncedSequence?: number;
+  lastAcknowledgedSequence?: number;
+  versionVector?: VersionVector;
   registeredAt?: Date | string;
   revokedAt?: Date | string | null;
   revocationReason?: string | null;
 }
+
+export type ConflictClassificationCategory =
+  | "METADATA_MUTABLE"
+  | "INVENTORY_EVENT"
+  | "FINANCIAL_TRANSACTION";
 
 export type SyncConflictCategory =
   | "SAME_RECORD_CONFLICT"
@@ -31,13 +47,24 @@ export type SyncConflictCategory =
   | "TENANT_CONFLICT"
   | "PERMISSION_CONFLICT"
   | "DELETED_RECORD_CONFLICT"
-  | "SCHEMA_VERSION_CONFLICT";
+  | "SCHEMA_VERSION_CONFLICT"
+  | "IMMUTABLE_FINANCIAL_CONFLICT"
+  | "CONCURRENT_OFFLINE_CONFLICT"
+  | "SEQUENCE_GAP_DETECTED";
+
+export interface SequenceGapInfo {
+  expectedNextCursor: number;
+  receivedCursor: number;
+  missingCursors: number[];
+  detectedAt: string;
+}
 
 export type SyncMutationStatus =
   | "SUCCESS"
   | "DUPLICATE"
   | "CONFLICT"
   | "REJECTED"
+  | "FAILED"
   | "RETRY"
   | "INVALID"
   | "UNAUTHORIZED";
@@ -54,7 +81,8 @@ export type SyncAuditEventType =
   | "TENANT_MISMATCH"
   | "BRANCH_MISMATCH"
   | "PERMISSION_DENIED"
-  | "SCHEMA_VERSION_REJECTED";
+  | "SCHEMA_VERSION_REJECTED"
+  | "COMPENSATING_TRANSACTION_CREATED";
 
 export type ReportingSyncTag =
   | "LOCAL_UNSYNCED"
@@ -96,13 +124,14 @@ export interface PerMutationResult {
   status: SyncMutationStatus;
   success?: boolean;
   errorCode?: string;
+  error?: string;
   serverVersion?: number;
   conflict?: {
     category: SyncConflictCategory;
     message: string;
     serverRecord?: Record<string, any> | null;
     clientRecord?: Record<string, any> | null;
-    resolutionStrategy?: "SERVER_WINS" | "CLIENT_WINS" | "MANUAL_MERGE" | "RETRY_WITH_NEW_VERSION";
+    resolutionStrategy?: "SERVER_WINS" | "CLIENT_WINS" | "MANUAL_MERGE" | "RETRY_WITH_NEW_VERSION" | "OPTIMISTIC_MERGE";
   } | null;
   message?: string;
   processedAt?: string;

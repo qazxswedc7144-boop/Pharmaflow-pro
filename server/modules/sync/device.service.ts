@@ -20,12 +20,15 @@ export class DeviceService {
    */
   static async registerDevice(data: {
     deviceId: string;
+    installationId?: string;
     deviceName: string;
     tenantId: string;
     branchId: string;
     userId: string;
     appVersion: string;
     schemaVersion?: number;
+    initialSequence?: number;
+    initialVector?: Record<string, number>;
   }): Promise<DeviceIdentity> {
     const now = new Date();
     const cacheKey = this.getCacheKey(data.tenantId, data.deviceId);
@@ -40,6 +43,7 @@ export class DeviceService {
 
     const record: DeviceIdentity = {
       deviceId: data.deviceId,
+      installationId: data.installationId || existing?.installationId || `INST-${data.deviceId}`,
       deviceName: data.deviceName || "Unidentified POS Device",
       tenantId: data.tenantId,
       branchId: data.branchId,
@@ -48,6 +52,10 @@ export class DeviceService {
       appVersion: data.appVersion || "1.0.0",
       schemaVersion: data.schemaVersion || SYNC_PROTOCOL_VERSION,
       status,
+      syncHealth: status === "ACTIVE" ? "HEALTHY" : "UNHEALTHY",
+      lastSyncedSequence: data.initialSequence || existing?.lastSyncedSequence || 0,
+      lastAcknowledgedSequence: data.initialSequence || existing?.lastAcknowledgedSequence || 0,
+      versionVector: data.initialVector || existing?.versionVector || { [data.deviceId]: 0 },
       registeredAt: existing?.registeredAt || now.toISOString(),
       revokedAt: existing?.revokedAt || null,
       revocationReason: existing?.revocationReason || null
@@ -88,12 +96,36 @@ export class DeviceService {
   }
 
   /**
-   * Retrieves device record
+   * Retrieves device record with dynamically computed sync health
    */
   static async getDevice(tenantId: string, deviceId: string): Promise<DeviceIdentity | (DeviceIdentity & { lastSeen: string }) | null> {
     const cacheKey = this.getCacheKey(tenantId, deviceId);
     const dev = this.deviceCache.get(cacheKey);
     if (!dev) return null;
+
+    const now = Date.now();
+    const lastSeenMs = new Date(dev.lastSeenAt).getTime();
+    const ageSeconds = Math.max(0, (now - lastSeenMs) / 1000);
+
+    // Dynamically evaluate sync health based on age, sequence lag, and security status
+    let health: "HEALTHY" | "DEGRADED" | "UNHEALTHY" | "STALE" = "HEALTHY";
+    const sequenceLag = Math.max(0, (dev.lastSyncedSequence || 0) - (dev.lastAcknowledgedSequence || 0));
+
+    if (dev.status === "REVOKED" || dev.status === "SUSPENDED") {
+      health = "UNHEALTHY";
+    } else if (sequenceLag > 100) {
+      health = "DEGRADED";
+    } else if (ageSeconds > 3600) {
+      health = "UNHEALTHY";
+      if (dev.status === "ACTIVE") dev.status = "OFFLINE";
+    } else if (ageSeconds > 600) {
+      health = "STALE";
+      if (dev.status === "ACTIVE") dev.status = "STALE";
+    } else if (ageSeconds > 120 || sequenceLag > 20) {
+      health = "DEGRADED";
+    }
+
+    dev.syncHealth = health;
     const lastSeenStr = dev.lastSeenAt instanceof Date ? dev.lastSeenAt.toISOString() : String(dev.lastSeenAt || new Date().toISOString());
     return {
       ...dev,
@@ -262,5 +294,66 @@ export class DeviceService {
       }
     }
     return devices;
+  }
+
+  /**
+   * Updates last synced sequence cursor and acknowledged sequence for a device
+   */
+  static updateDeviceSequence(
+    tenantId: string,
+    deviceId: string,
+    params: { syncedSequence?: number; ackSequence?: number }
+  ): DeviceIdentity | null {
+    const cacheKey = this.getCacheKey(tenantId, deviceId);
+    const device = this.deviceCache.get(cacheKey);
+    if (!device) return null;
+
+    if (params.syncedSequence !== undefined) {
+      device.lastSyncedSequence = Math.max(device.lastSyncedSequence || 0, params.syncedSequence);
+    }
+    if (params.ackSequence !== undefined) {
+      device.lastAcknowledgedSequence = Math.max(device.lastAcknowledgedSequence || 0, params.ackSequence);
+    }
+    device.lastSeenAt = new Date().toISOString();
+    this.deviceCache.set(cacheKey, device);
+    return device;
+  }
+
+  /**
+   * Updates or merges the version vector for a device
+   */
+  static updateVersionVector(
+    tenantId: string,
+    deviceId: string,
+    vector: Record<string, number>
+  ): DeviceIdentity | null {
+    const cacheKey = this.getCacheKey(tenantId, deviceId);
+    const device = this.deviceCache.get(cacheKey);
+    if (!device) return null;
+
+    device.versionVector = {
+      ...(device.versionVector || {}),
+      ...vector
+    };
+    device.lastSeenAt = new Date().toISOString();
+    this.deviceCache.set(cacheKey, device);
+    return device;
+  }
+
+  /**
+   * Explicitly sets device sync health
+   */
+  static setDeviceHealth(
+    tenantId: string,
+    deviceId: string,
+    health: "HEALTHY" | "DEGRADED" | "UNHEALTHY" | "STALE"
+  ): DeviceIdentity | null {
+    const cacheKey = this.getCacheKey(tenantId, deviceId);
+    const device = this.deviceCache.get(cacheKey);
+    if (!device) return null;
+
+    device.syncHealth = health;
+    this.deviceCache.set(cacheKey, device);
+    return device;
   }
 }

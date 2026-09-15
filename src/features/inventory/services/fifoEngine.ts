@@ -1,216 +1,131 @@
 
 import { db } from '@/core/db';
-import { InventoryLayer, FIFOConsumptionLog, Sale, Purchase, UnifiedInvoice } from '@/types';
+import { Sale, Purchase, UnifiedInvoice } from '@/types';
 import { WorkerClient } from '@features/workers/worker.client';
-import { InsufficientStockError, InventoryError, ErrorManager } from '@/core/errors';
 
+/**
+ * @deprecated Use UnifiedInventoryMutationEngine for all inventory and FIFO mutations.
+ * This class is maintained for legacy compatibility ONLY.
+ */
 export class FIFOEngine {
 
   /**
-   * ON PURCHASE: Create new layer
+   * ON PURCHASE: Create new layer directly in inventory_layers
    */
   static async addPurchaseLayer(item_id: string, quantity: number, unit_cost: number, reference_id: string): Promise<void> {
-    const layer: Partial<InventoryLayer> = {
-      id: `LAY-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-      item_id,
-      quantity_remaining: quantity,
-      unit_cost,
+    const layerId = db.generateId('LYR');
+    await db.inventory_layers.add({
+      id: layerId,
+      product_id: item_id,
+      item_id: item_id,
+      quantity_initial: Math.abs(quantity),
+      quantity_remaining: Math.abs(quantity),
+      unit_cost: unit_cost,
+      reference_id: reference_id,
+      purchase_id: reference_id,
       created_at: new Date().toISOString(),
-      reference_id,
-      lastModified: new Date().toISOString(),
-      tenant_id: 'TEN-DEV-001'
-    };
-    
-    try {
-      await db.inventory_layers.add(layer as InventoryLayer);
-    } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      throw new Error(`FIFO Error (Add Layer): ${errMsg}`);
-    }
+      lastModified: new Date().toISOString()
+    });
   }
 
   /**
-   * FIFO CONSUMPTION
+   * FIFO CONSUMPTION directly on inventory_layers and logging to fifo_consumption_log
    */
   static async consumeFIFO(sale_id: string, item_id: string, quantity: number): Promise<{ totalCost: number, unitCost: number }> {
-    if (!item_id) {
-      console.warn("Skipping FIFO consumption: missing item ID");
-      return { totalCost: 0, unitCost: 0 };
-    }
-    
-    let remainingToConsume = quantity;
+    const absQty = Math.abs(quantity);
+    const layers = await db.inventory_layers
+      .filter((l: any) => (l.item_id === item_id || l.product_id === item_id) && Number(l.quantity_remaining || 0) > 0)
+      .toArray();
+
+    // Sort by creation date (FIFO)
+    layers.sort((a, b) => new Date(a.created_at || a.createdAt || 0).getTime() - new Date(b.created_at || b.createdAt || 0).getTime());
+
+    let remainingToConsume = absQty;
     let totalCost = 0;
+    let totalConsumed = 0;
+    const consumptionLogs: any[] = [];
+    const updatedLayers: any[] = [];
 
-    try {
-      // 1. Get layers sorted by created_at ASC
-      const layers = await db.inventory_layers
-        .where('item_id')
-        .equals(item_id)
-        .filter((l: InventoryLayer) => l.quantity_remaining > 0)
-        .sortBy('created_at');
+    for (const layer of layers) {
+      if (remainingToConsume <= 0) break;
+      const available = Number(layer.quantity_remaining ?? layer.quantity_initial ?? 0);
+      if (available <= 0) continue;
 
-      const updatedLayers: InventoryLayer[] = [];
-      const consumptionLogs: FIFOConsumptionLog[] = [];
+      const consumeQty = Math.min(available, remainingToConsume);
+      const layerCost = Number(layer.unit_cost ?? layer.unitCost ?? 0);
 
-      // 2. Loop layers
-      for (const layer of (layers || [])) {
-        if (remainingToConsume <= 0) break;
+      totalCost += consumeQty * layerCost;
+      totalConsumed += consumeQty;
+      remainingToConsume -= consumeQty;
 
-        let consumedFromThisLayer = 0;
+      const newRemaining = available - consumeQty;
+      updatedLayers.push({ id: layer.id, quantity_remaining: newRemaining });
 
-        if (layer.quantity_remaining >= remainingToConsume) {
-          // This layer can satisfy the rest of the demand
-          consumedFromThisLayer = remainingToConsume;
-          totalCost += consumedFromThisLayer * layer.unit_cost;
-          layer.quantity_remaining -= remainingToConsume;
-          remainingToConsume = 0;
-        } else {
-          // This layer is partially consumed
-          consumedFromThisLayer = layer.quantity_remaining;
-          totalCost += consumedFromThisLayer * layer.unit_cost;
-          remainingToConsume -= layer.quantity_remaining;
-          layer.quantity_remaining = 0;
-        }
-
-        updatedLayers.push(layer);
-        consumptionLogs.push({
-          id: `LOG-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-          sale_id,
-          item_id,
-          layer_id: layer.id,
-          quantity_consumed: consumedFromThisLayer,
-          unit_cost: layer.unit_cost,
-          consumed_at: new Date().toISOString(),
-          lastModified: new Date().toISOString(),
-          tenant_id: 'TEN-DEV-001'
-        });
-      }
-
-      // 3. VALIDATION / AUTO-SEED RECOVERY
-      if (remainingToConsume > 0) {
-        try {
-          const prod = await db.products.get(item_id);
-          const costPrice = prod?.CostPrice || prod?.cost || 10;
-          const syntheticLayer = {
-            id: `LAY-${Date.now()}-${Math.random().toString(36).substring(2, 7)}-synthetic`,
-            item_id,
-            unit_cost: costPrice,
-            quantity: remainingToConsume,
-            quantity_remaining: 0,
-            created_at: new Date().toISOString(),
-            lastModified: new Date().toISOString(),
-            reference_id: sale_id,
-            type: 'purchase',
-            tenant_id: 'TEN-DEV-001'
-          };
-          await db.inventory_layers.add(syntheticLayer as InventoryLayer);
-          
-          totalCost += remainingToConsume * costPrice;
-          consumptionLogs.push({
-            id: `LOG-${Date.now()}-${Math.random().toString(36).substring(2, 7)}-synthetic`,
-            sale_id,
-            item_id,
-            layer_id: syntheticLayer.id,
-            quantity_consumed: remainingToConsume,
-            unit_cost: costPrice,
-            consumed_at: new Date().toISOString(),
-            lastModified: new Date().toISOString(),
-            tenant_id: 'TEN-DEV-001'
-          });
-          
-          remainingToConsume = 0;
-        } catch (err: unknown) {
-          ErrorManager.handleError(err, { module: 'INVENTORY', action: 'AUTO_SEED_FIFO', showToast: false });
-          throw new InsufficientStockError({
-            message: `Insufficient stock for item ${item_id}. Missing ${remainingToConsume} units.`,
-            arabicMessage: `الكمية المطلوبة غير متوفرة في المخزون (ينقص ${remainingToConsume} وحدة).`,
-            module: 'INVENTORY',
-            metadata: { item_id, remainingToConsume },
-          });
-        }
-      }
-
-      // 4. UPDATE INVENTORY & LOGS
-      for (const layer of updatedLayers) {
-        await db.inventory_layers.update(layer.id, { 
-          quantity_remaining: layer.quantity_remaining, 
-          lastModified: new Date().toISOString() 
-        });
-      }
-      
-      if (consumptionLogs.length > 0) {
-        await db.fifo_consumption_log.bulkAdd(consumptionLogs);
-      }
-
-      return {
-        totalCost,
-        unitCost: quantity > 0 ? totalCost / quantity : 0
-      };
-    } catch (error: unknown) {
-      if (error instanceof InsufficientStockError || error instanceof InventoryError) {
-        throw error;
-      }
-      const norm = ErrorManager.normalizeError(error, 'INVENTORY', 'حدث خطأ في تقييم المخزون (FIFO)');
-      throw new InventoryError({
-        message: norm.message,
-        arabicMessage: norm.arabicMessage,
-        module: 'INVENTORY',
-        originalError: error,
+      consumptionLogs.push({
+        id: db.generateId('FCL'),
+        sale_id: sale_id,
+        invoice_id: sale_id,
+        layer_id: layer.id,
+        product_id: item_id,
+        item_id: item_id,
+        quantity_consumed: consumeQty,
+        unit_cost: layerCost,
+        created_at: new Date().toISOString()
       });
     }
+
+    for (const ul of updatedLayers) {
+      await db.inventory_layers.update(ul.id, {
+        quantity_remaining: ul.quantity_remaining,
+        lastModified: new Date().toISOString()
+      });
+    }
+
+    if (consumptionLogs.length > 0) {
+      await db.fifo_consumption_log.bulkAdd(consumptionLogs);
+    }
+
+    const unitCost = totalConsumed > 0 ? totalCost / totalConsumed : 0;
+    return { totalCost, unitCost };
   }
 
   /**
-   * ON UNPOST: Restore consumed quantities
+   * ON UNPOST: Restore consumed quantities from fifo_consumption_log
    */
   static async reverseFIFO(sale_id: string): Promise<void> {
-    if (!sale_id) return;
-    
-    try {
-      // 1. Find consumption logs for this sale
-      const logs = await db.fifo_consumption_log
-        .where('sale_id')
-        .equals(sale_id)
-        .toArray();
+    const logs = await db.fifo_consumption_log
+      .filter((log: any) => log.sale_id === sale_id || log.invoice_id === sale_id)
+      .toArray();
 
-      for (const log of (logs || [])) {
-        // 2. Restore quantity to original layer
-        const layer = await db.inventory_layers.get(log.layer_id);
-          
-        if (layer) {
-          await db.inventory_layers.update(log.layer_id, { 
-            quantity_remaining: (layer.quantity_remaining || 0) + log.quantity_consumed,
-            lastModified: new Date().toISOString()
-          });
-        }
-        
-        // 3. Delete log
-        await db.fifo_consumption_log.delete(log.id);
+    for (const log of logs) {
+      const layer = await db.inventory_layers.get(log.layer_id);
+      if (layer) {
+        const currentRemaining = Number(layer.quantity_remaining ?? 0);
+        const initial = Number(layer.quantity_initial ?? layer.quantity ?? currentRemaining);
+        const restored = Math.min(initial, currentRemaining + Number(log.quantity_consumed || 0));
+        await db.inventory_layers.update(layer.id, {
+          quantity_remaining: restored,
+          lastModified: new Date().toISOString()
+        });
       }
-    } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      throw new Error(`FIFO Error (Reverse): ${errMsg}`);
+    }
+    const logIds = logs.map((l: any) => l.id).filter(Boolean);
+    if (logIds.length > 0) {
+      await db.fifo_consumption_log.bulkDelete(logIds);
     }
   }
 
   /**
-   * ON PURCHASE UNPOST: Remove the layer
+   * ON PURCHASE UNPOST: Remove purchase layers
    */
   static async removePurchaseLayer(reference_id: string): Promise<void> {
-    if (!reference_id) return;
-    
-    try {
-      const layers = await db.inventory_layers
-        .where('reference_id')
-        .equals(reference_id)
-        .toArray();
-      
-      for (const layer of layers) {
-        await db.inventory_layers.delete(layer.id);
-      }
-    } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      throw new Error(`FIFO Error (Remove Purchase Layer): ${errMsg}`);
+    const layers = await db.inventory_layers
+      .filter((l: any) => l.reference_id === reference_id || l.purchase_id === reference_id)
+      .toArray();
+
+    const layerIds = layers.map((l: any) => l.id).filter(Boolean);
+    if (layerIds.length > 0) {
+      await db.inventory_layers.bulkDelete(layerIds);
     }
   }
 
@@ -224,13 +139,12 @@ export class FIFOEngine {
     const isConsumption = (type === 'SALE' && !isReturn) || (type === 'PURCHASE' && isReturn);
 
     if (isConsumption) {
-      const items = (invAny.items as Array<{ product_id: string; qty: number; cost?: number; price: number }>) || [];
-      const productIds = items.map(itm => itm.product_id).filter(Boolean);
+      const items = (invAny.items as Array<any>) || [];
+      const productIds = items.map(itm => itm.product_id || itm.productId || itm.id).filter(Boolean);
       
-      const layers = await db.inventory_layers
-        .where('item_id')
-        .anyOf(productIds)
-        .toArray();
+      const layers = productIds.length > 0
+        ? await db.inventory_layers.where('item_id').anyOf(productIds).toArray()
+        : [];
 
       const result = await WorkerClient.runFIFO(invoice, layers);
 

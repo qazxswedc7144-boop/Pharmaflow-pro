@@ -16,7 +16,7 @@ import { AliasNormalization } from './aliasNormalization';
 import { SupplierAliasRepository } from './supplierAliasRepository';
 import { ProductAliasRepository } from './productAliasRepository';
 import { AliasAuditService } from './aliasAuditService';
-import { Product, Supplier } from '@/types';
+import { Product } from '@/types';
 
 export interface AliasLearningSummary {
   supplierAliasesLearned: number;

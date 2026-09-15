@@ -1,29 +1,29 @@
 import { db } from '@/core/db';
-import { InvoiceItem, InvoiceStatus, Sale, Purchase, Receipt, Payment, Voucher, TransferStatus, AccountingEntry, JournalLine } from '@/types';
-import { ValidationService as validationService } from '@/services/integrity/ValidationService';
+import { InvoiceItem, InvoiceStatus, Receipt, Payment, TransferStatus, JournalLine } from '@/types';
 import { TransactionService } from '@/services/transactions/TransactionService';
 import { FaultService } from '@/services/integrity/FaultService';
-import { FIFOEngine as fifoEngine } from '@features/inventory/services/fifoEngine';
-import { StockMovementEngine as stockEngine } from '@features/inventory/services/stockMovementEngine';
-import { InventoryService } from '@features/inventory/services/InventoryService';
-import { AccountingEngine as accountingEngine } from '@features/accounting/services/AccountingEngine';
-import { CurrencyService } from '@/services/localization/CurrencyService';
 import { InvoiceRepository } from '@/database/repositories/invoice.repository';
-import { PurchaseRepository } from '@/database/repositories/PurchaseRepository';
-import { SalesRepository } from '@/database/repositories/SalesRepository';
 import { AccountingRepository } from '@/database/repositories/AccountingRepository';
 import { FinancialTransactionRepository } from '@/database/repositories/FinancialTransactionRepository';
 import { SupplierRepository } from '@/database/repositories/SupplierRepository';
 import { authService } from '@features/auth/services/authService';
 import { GlobalGuard } from '@/services/security/GlobalGuard';
 import { BackupService } from '@/services/backupService';
-import { useUIStore } from '@/store/useUIStore';
-import { SubscriptionService } from '@/services/saas/subscriptionService';
+import { SubscriptionEntitlementService } from '@/services/saas/subscriptionEntitlementService';
+import { UsageMeterService } from '@/services/saas/usageMeterService';
 import { generateTransactionUuid } from '@/utils/uuid';
 import { AuditService } from '@/services/system/AuditService';
-import { ErrorTrackingService } from '@/services/system/ErrorTrackingService';
 import { ProjectionEventBus } from '@/services/system/ProjectionEventBus';
 import { LockService } from '@features/locking/lock.service';
+import { IdempotencyRegistry } from '@/core/integrity/idempotencyRegistry';
+
+import { WorkflowOrchestrator } from '@/core/workflow';
+import { purchaseWorkflow } from '@features/purchases/workflows/PurchaseWorkflow';
+import { salesWorkflow } from '@features/sales/workflows/SalesWorkflow';
+import { inventoryAdjustmentWorkflow } from '@features/inventory/workflows/InventoryAdjustmentWorkflow';
+import { inventoryTransferWorkflow } from '@features/inventory/workflows/InventoryTransferWorkflow';
+import { voucherWorkflow } from '@features/accounting/workflows/VoucherWorkflow';
+import { unifiedInventoryMutationEngine } from '@features/inventory/services/UnifiedInventoryMutationEngine';
 
 export interface WorkflowSalePayload {
   customerId?: string;
@@ -91,26 +91,26 @@ export interface WorkflowStockTransferStatusParams {
   receivedQuantities?: Record<string, number>;
 }
 
-const PURCHASE_WORKFLOW_TABLES = [
+export const PURCHASE_WORKFLOW_TABLES = [
   'invoices', 'invoiceItems', 'products', 'inventoryTransactions', 
   'inventory_layers', 'suppliers', 'journalEntries', 'journalLines', 
   'accounts', 'financialTransactions', 'auditLogs', 'idempotencyKeys', 
   'projectionEvents', 'customers', 'vouchers'
 ];
 
-const SALES_WORKFLOW_TABLES = [
+export const SALES_WORKFLOW_TABLES = [
   'invoices', 'invoiceItems', 'products', 'inventoryTransactions', 
   'inventory_layers', 'fifo_consumption_log', 'customers', 'journalEntries', 
   'journalLines', 'accounts', 'financialTransactions', 'auditLogs', 
   'idempotencyKeys', 'projectionEvents', 'vouchers', 'suppliers'
 ];
 
-const ADJUSTMENT_WORKFLOW_TABLES = [
+export const ADJUSTMENT_WORKFLOW_TABLES = [
   'inventoryTransactions', 'products', 'journalEntries', 'journalLines', 
   'accounts', 'auditLogs', 'idempotencyKeys', 'projectionEvents'
 ];
 
-const VOUCHER_WORKFLOW_TABLES = [
+export const VOUCHER_WORKFLOW_TABLES = [
   'vouchers', 'invoices', 'suppliers', 'customers', 'financialTransactions', 
   'journalEntries', 'journalLines', 'accounts', 'auditLogs', 
   'idempotencyKeys', 'projectionEvents'
@@ -118,6 +118,7 @@ const VOUCHER_WORKFLOW_TABLES = [
 
 const STOCK_TRANSFER_WORKFLOW_TABLES = [
   'branchTransfers', 'branchTransferItems', 'branchInventory', 
+  'products', 'warehouseStock', 'inventoryTransactions', 'inventory_layers', 'medicineBatches',
   'auditLogs', 'idempotencyKeys', 'projectionEvents'
 ];
 
@@ -136,36 +137,34 @@ const UNPOST_WORKFLOW_TABLES = [
 export class UnifiedBusinessWorkflowOrchestrator {
 
   /**
-   * Check Trial plan usage bounds
+   * Check Trial plan usage bounds and assert subscription entitlement
    */
-  private static async checkTrialLimit(isEdit = false): Promise<void> {
-    const plan = localStorage.getItem('saas_active_plan') || 'TRIAL';
-    if (plan === 'TRIAL') {
-      const usage = await SubscriptionService.getLocalUsageCount();
-      if (usage >= 200 && !isEdit) {
-        useUIStore.getState().setTrialBlockedModalOpen(true);
-        throw new Error("تم الوصول للحد التجريبي 200 عملية. يرجى الاشتراك للمتابعة.");
-      }
-    }
+  public static async checkTrialLimit(isEdit = false, operationName = 'عملية تجارية'): Promise<void> {
+    await SubscriptionEntitlementService.assertOperationAllowed(operationName, { isEdit });
   }
 
   /**
    * Manage idempotency lifecycle before entering critical execution section
    */
-  private static async acquireIdempotencyKey(key: string): Promise<void> {
+  public static async acquireIdempotencyKey(key: string): Promise<void> {
     if (!key) return;
-    const existing = await db.idempotencyKeys.get(key);
+    const existing = await IdempotencyRegistry.get(key);
     if (existing) {
-      if (existing.status === 'COMPLETED') {
+      if (existing.status === 'COMMITTED') {
         return;
       }
       if (existing.status === 'PROCESSING') {
         throw new Error("⚠️ العملية قيد المعالجة حالياً، يرجى الانتظار... ⏳");
       }
     } else {
-      await db.idempotencyKeys.add({
-        id: key,
+      await IdempotencyRegistry.save({
+        key,
         status: 'PROCESSING',
+        tenantId: 'default',
+        branchId: 'main',
+        operationType: 'WORKFLOW',
+        entityType: 'INVOICE',
+        fingerprint: key,
         createdAt: new Date().toISOString()
       });
     }
@@ -173,32 +172,31 @@ export class UnifiedBusinessWorkflowOrchestrator {
     try {
       await TransactionService.ensureIdempotency(key);
     } catch (err) {
-      await db.idempotencyKeys.delete(key).catch(() => null);
+      await IdempotencyRegistry.delete(key).catch(() => null);
       throw err;
     }
   }
 
   /**
-   * Finalize idempotency key status to COMPLETED
+   * Finalize idempotency key status to COMPLETED and invalidate usage meter cache
    */
-  private static async markIdempotencyCompleted(key: string): Promise<void> {
+  public static async markIdempotencyCompleted(key: string): Promise<void> {
     if (!key) return;
     TransactionService.registerCompletedUuid(key);
-    await db.idempotencyKeys.update(key, {
-      status: 'COMPLETED',
-      completedAt: new Date().toISOString()
-    }).catch(() => null);
+    await IdempotencyRegistry.updateStatus(key, 'COMMITTED').catch(() => null);
+    // Invalidate meter cache to update counters in real-time
+    UsageMeterService.invalidate();
   }
 
   /**
    * Release processing idempotency key on error
    */
-  private static async releaseIdempotencyKey(key: string): Promise<void> {
+  public static async releaseIdempotencyKey(key: string): Promise<void> {
     if (!key) return;
     try {
-      const rec = await db.idempotencyKeys.get(key);
+      const rec = await IdempotencyRegistry.get(key);
       if (rec && rec.status === 'PROCESSING') {
-        await db.idempotencyKeys.delete(key);
+        await IdempotencyRegistry.delete(key);
       }
     } catch (e) {
       console.warn('[WorkflowOrchestrator] Failed to release idempotency key:', e);
@@ -206,661 +204,204 @@ export class UnifiedBusinessWorkflowOrchestrator {
   }
 
   // =========================================================================
-  // 1. PURCHASE WORKFLOW
+  // 1. PURCHASE WORKFLOW (Delegated to PurchaseWorkflow)
   // =========================================================================
   public static async processPurchase(
     payload: WorkflowPurchasePayload,
     options?: WorkflowInvoiceOptions
   ): Promise<{ success: boolean; refId: string }> {
-    const isEdit = !!payload.id;
     const transactionUuid = payload.transactionUuid || generateTransactionUuid('PURCHASE');
     payload.transactionUuid = transactionUuid;
 
-    await this.acquireIdempotencyKey(transactionUuid);
-    await this.checkTrialLimit(isEdit);
+    const result = await WorkflowOrchestrator.execute(
+      purchaseWorkflow,
+      {
+        supplierId: payload.supplierId,
+        items: payload.items,
+        total: payload.total,
+        id: payload.id,
+        date: payload.date || options?.date,
+        notes: payload.notes,
+        attachment: payload.attachment,
+        isCash: options?.isCash,
+        isReturn: options?.isReturn,
+        invoiceStatus: options?.invoiceStatus,
+        currency: options?.currency,
+        isEdit: !!payload.id
+      },
+      { idempotencyKey: transactionUuid }
+    );
 
-    const effectiveDate = payload.date || options?.date || new Date().toISOString();
-    const resourceId = payload.id || `NEW_PURCHASE_${Date.now()}`;
-    const finalStatus: InvoiceStatus = options?.invoiceStatus || 'POSTED';
-    const isPosting = finalStatus === 'POSTED' || finalStatus === 'LOCKED';
-
-    await GlobalGuard.checkSystemState(isEdit ? 'تعديل فاتورة مشتريات' : 'إنشاء فاتورة مشتريات', effectiveDate);
-
-    let beforeState: Purchase | null = null;
-    if (isEdit) {
-      beforeState = (await InvoiceRepository.getPurchaseById(resourceId)) || null;
+    if (!result.success) {
+      throw new Error(result.error?.message || 'فشلت معالجة فاتورة المشتريات');
     }
 
-    try {
-      return await TransactionService.runSafe(resourceId, async () => {
-        try {
-          if (isEdit && beforeState) {
-            const status = (beforeState as any).invoiceStatus || (beforeState as any).InvoiceStatus;
-            if (status === 'POSTED') {
-              await this.unpostInvoice(resourceId, 'PURCHASE');
-            }
-          }
-
-          // Validation
-          await validationService.validateInvoice(payload, 'PURCHASE');
-          if (!isEdit && payload.id) {
-            await validationService.validateInvoiceIdUniqueness(payload.id, 'purchases', db.db);
-          }
-
-          // Costing & Stock
-          let costResult = { totalCost: 0, itemCosts: {} };
-          if (isPosting) {
-            costResult = await fifoEngine.apply({ ...payload, subtotal: payload.total, finalTotal: payload.total, type: 'PURCHASE' } as unknown as Sale);
-            await stockEngine.apply({ ...payload, subtotal: payload.total, finalTotal: payload.total, type: 'PURCHASE' } as unknown as Sale);
-          }
-
-          // Save purchase document
-          const result = await InvoiceRepository.savePurchase(
-            payload.supplierId!,
-            payload.items,
-            payload.total,
-            payload.id || '',
-            options?.isCash || false,
-            options?.currency || CurrencyService.getCurrentCurrencyCode(),
-            finalStatus,
-            0,
-            'LOW',
-            payload.id,
-            payload.attachment,
-            !!options?.isReturn,
-            payload.date,
-            transactionUuid
-          );
-
-          const refId = (result as any).id;
-
-          // Partner balance & financial ledger
-          if (isPosting) {
-            const suppId = payload.supplierId;
-            if (suppId && suppId !== 'مورد نقدي') {
-              const balanceDelta = options?.isReturn ? -payload.total : payload.total;
-              await db.updateSupplierBalance(suppId, balanceDelta);
-            }
-            await FinancialTransactionRepository.record({
-              id: db.generateId('FT'),
-              Transaction_Type: options?.isReturn ? 'Refund' : (options?.isCash ? 'Payment' : 'Invoice'),
-              Reference_ID: refId,
-              Reference_Table: 'Purchase_Invoices',
-              Entity_Type: 'Supplier',
-              Entity_Name: payload.supplierId || 'مورد نقدي',
-              Amount: payload.total,
-              Direction: options?.isReturn ? 'Debit' : 'Credit',
-              Transaction_Date: effectiveDate,
-              Notes: `فاتورة مشتريات #${refId}`
-            });
-
-            // Accounting Entry
-            await accountingEngine.postInvoice({ ...payload, type: 'PURCHASE', id: refId, transactionUuid }, costResult);
-            await ProjectionEventBus.publish('INVOICE_POSTED', refId, { type: 'PURCHASE', transactionUuid });
-          }
-
-          // Central Audit
-          await AuditService.log({
-            action: isEdit ? 'EDIT' : 'CREATE',
-            module: 'PURCHASE',
-            transactionUuid,
-            before: beforeState,
-            after: result,
-            recordId: refId
-          });
-
-          await this.markIdempotencyCompleted(transactionUuid);
-          return { success: true, refId };
-        } catch (err: any) {
-          await ErrorTrackingService.log({
-            moduleName: 'PURCHASE',
-            screenName: 'توريد مشتريات',
-            errorMessage: err.message || String(err),
-            stackTrace: err.stack,
-            severity: 'ERROR'
-          });
-          FaultService.log({
-            type: 'ORCHESTRATOR_FATAL',
-            module: 'UNIFIED_WORKFLOW_ORCHESTRATOR',
-            message: `Purchase workflow failed: ${err.message || String(err)}`,
-            payload: { payload, resourceId },
-            stack: err.stack
-          });
-          throw err;
-        }
-      }, transactionUuid, PURCHASE_WORKFLOW_TABLES);
-    } catch (outerErr) {
-      await this.releaseIdempotencyKey(transactionUuid);
-      throw outerErr;
-    }
+    return {
+      success: true,
+      refId: result.data!.refId
+    };
   }
 
   // =========================================================================
-  // 2. SALES WORKFLOW
+  // 2. SALES WORKFLOW (Delegated to SalesWorkflow)
   // =========================================================================
   public static async processSale(
     payload: WorkflowSalePayload,
     options?: WorkflowInvoiceOptions
   ): Promise<{ success: boolean; refId: string }> {
-    const isEdit = !!payload.id;
     const transactionUuid = payload.transactionUuid || generateTransactionUuid('SALE');
     payload.transactionUuid = transactionUuid;
 
-    await this.acquireIdempotencyKey(transactionUuid);
-    await this.checkTrialLimit(isEdit);
+    const result = await WorkflowOrchestrator.execute(
+      salesWorkflow,
+      {
+        customerId: payload.customerId,
+        items: payload.items,
+        total: payload.total,
+        id: payload.id,
+        date: payload.date || options?.date,
+        notes: payload.notes,
+        attachment: payload.attachment,
+        isCash: options?.isCash,
+        isReturn: options?.isReturn,
+        invoiceStatus: options?.invoiceStatus,
+        currency: options?.currency,
+        isEdit: !!payload.id
+      },
+      { idempotencyKey: transactionUuid }
+    );
 
-    const effectiveDate = payload.date || options?.date || new Date().toISOString();
-    const resourceId = payload.id || `NEW_SALE_${Date.now()}`;
-    const finalStatus: InvoiceStatus = options?.invoiceStatus || 'POSTED';
-    const isPosting = finalStatus === 'POSTED' || finalStatus === 'LOCKED';
-
-    await GlobalGuard.checkSystemState(isEdit ? 'تعديل فاتورة مبيعات' : 'إنشاء فاتورة مبيعات', effectiveDate);
-
-    let beforeState: Sale | null = null;
-    if (isEdit) {
-      beforeState = (await InvoiceRepository.getSaleById(resourceId)) || null;
+    if (!result.success) {
+      throw new Error(result.error?.message || 'فشلت معالجة فاتورة المبيعات');
     }
 
-    try {
-      return await TransactionService.runSafe(resourceId, async () => {
-        try {
-          if (isEdit && beforeState) {
-            const status = (beforeState as any).InvoiceStatus || (beforeState as any).invoiceStatus;
-            if (status === 'POSTED') {
-              await this.unpostInvoice(resourceId, 'SALE');
-            }
-          }
-
-          // Validation
-          await validationService.validateInvoice(payload, 'SALE');
-          if (!isEdit && payload.id) {
-            await validationService.validateInvoiceIdUniqueness(payload.id, 'sales', db.db);
-          }
-
-          // Costing & Stock
-          let costResult = { totalCost: 0, itemCosts: {} };
-          if (isPosting) {
-            costResult = await fifoEngine.apply({ ...payload, subtotal: payload.total, finalTotal: payload.total, type: 'SALE' } as unknown as Sale);
-            await stockEngine.apply({ ...payload, subtotal: payload.total, finalTotal: payload.total, type: 'SALE' } as unknown as Sale);
-          }
-
-          // Save Sale Document
-          const result = await InvoiceRepository.saveSale(
-            payload.customerId!,
-            payload.items,
-            payload.total,
-            !!options?.isReturn,
-            payload.id || '',
-            options?.currency || CurrencyService.getCurrentCurrencyCode(),
-            options?.paymentStatus || 'Cash',
-            finalStatus,
-            0,
-            'LOW',
-            costResult.totalCost,
-            payload.id,
-            payload.attachment,
-            payload.date,
-            transactionUuid
-          );
-
-          const refId = (result as any).id;
-
-          // Customer Balance & Financial Ledger
-          if (isPosting) {
-            const custId = payload.customerId;
-            if (custId && custId !== 'عميل نقدي') {
-              const balanceDelta = options?.isReturn ? -payload.total : payload.total;
-              await db.updateCustomerBalance(custId, balanceDelta);
-            }
-            await FinancialTransactionRepository.record({
-              id: db.generateId('FT'),
-              Transaction_Type: options?.isReturn ? 'Refund' : (options?.paymentStatus === 'Cash' || options?.isCash ? 'Receipt' : 'Invoice'),
-              Reference_ID: refId,
-              Reference_Table: 'Sales_Invoices',
-              Entity_Type: 'Customer',
-              Entity_Name: payload.customerId || 'عميل نقدي',
-              Amount: payload.total,
-              Direction: options?.isReturn ? 'Credit' : 'Debit',
-              Transaction_Date: effectiveDate,
-              Notes: `فاتورة مبيعات #${refId}`
-            });
-
-            // Accounting Entry
-            await accountingEngine.postInvoice({ ...payload, type: 'SALE', id: refId, transactionUuid }, costResult);
-            await ProjectionEventBus.publish('INVOICE_POSTED', refId, { type: 'SALE', transactionUuid });
-          }
-
-          // Audit Logging
-          await AuditService.log({
-            action: isEdit ? 'EDIT' : 'CREATE',
-            module: 'SALE',
-            transactionUuid,
-            before: beforeState,
-            after: result,
-            recordId: refId
-          });
-
-          await this.markIdempotencyCompleted(transactionUuid);
-          return { success: true, refId };
-        } catch (err: any) {
-          await ErrorTrackingService.log({
-            moduleName: 'SALE',
-            screenName: 'كاشير المبيعات',
-            errorMessage: err.message || String(err),
-            stackTrace: err.stack,
-            severity: 'ERROR'
-          });
-          FaultService.log({
-            type: 'ORCHESTRATOR_FATAL',
-            module: 'UNIFIED_WORKFLOW_ORCHESTRATOR',
-            message: `Sales workflow failed: ${err.message || String(err)}`,
-            payload: { payload, resourceId },
-            stack: err.stack
-          });
-          throw err;
-        }
-      }, transactionUuid, SALES_WORKFLOW_TABLES);
-    } catch (outerErr) {
-      await this.releaseIdempotencyKey(transactionUuid);
-      throw outerErr;
-    }
+    return {
+      success: true,
+      refId: result.data!.refId
+    };
   }
 
   // =========================================================================
-  // 3. INVENTORY ADJUSTMENT WORKFLOW
+  // 3. INVENTORY ADJUSTMENT WORKFLOW (Delegated to InventoryAdjustmentWorkflow)
   // =========================================================================
   public static async processInventoryAdjustment(
     params: WorkflowStockAdjustmentParams
   ): Promise<{ success: boolean; refId: string }> {
-    await this.checkTrialLimit();
     const transactionUuid = params.transactionUuid || generateTransactionUuid('ADJUSTMENT' as any);
-    await this.acquireIdempotencyKey(transactionUuid);
 
-    const { productId, warehouseId, actualQty, userId, notes } = params;
-    const currentQty = await InventoryService.getWarehouseStock(warehouseId, productId);
-    const diff = actualQty - currentQty;
+    const result = await WorkflowOrchestrator.execute(
+      inventoryAdjustmentWorkflow,
+      {
+        productId: params.productId,
+        warehouseId: params.warehouseId,
+        actualQty: params.actualQty,
+        userId: params.userId,
+        notes: params.notes
+      },
+      { idempotencyKey: transactionUuid }
+    );
 
-    if (diff === 0) {
-      await this.releaseIdempotencyKey(transactionUuid);
-      return { success: true, refId: 'NO_CHANGE' };
+    if (!result.success) {
+      throw new Error(result.error?.message || 'فشلت تسوية المخزون');
     }
 
-    const refId = `ADJ-${Date.now()}`;
-
-    try {
-      return await TransactionService.runSafe(refId, async () => {
-        // 1. Inventory movement
-        await InventoryService.recordMovement({
-          type: 'ADJUSTMENT',
-          productId,
-          warehouseId,
-          quantity: diff,
-          sourceDocId: refId,
-          sourceDocType: 'ADJUSTMENT',
-          userId
-        });
-
-        // 2. Accounting entry
-        const invAcc = await accountingEngine.getCoreAccount('INVENTORY');
-        const gainAcc = 'ACC-INV-GAIN';
-        const lossAcc = 'ACC-INV-LOSS';
-
-        const product = await db.db.products.get(productId);
-        const cost = product?.CostPrice || product?.cost || 0;
-        const totalValue = Math.abs(diff * cost);
-
-        const entryId = db.generateId('JE');
-        const lines: JournalLine[] = [];
-
-        if (diff > 0) {
-          lines.push(this.createJournalLine(entryId, invAcc, totalValue, 0));
-          lines.push(this.createJournalLine(entryId, gainAcc, 0, totalValue));
-        } else {
-          lines.push(this.createJournalLine(entryId, lossAcc, totalValue, 0));
-          lines.push(this.createJournalLine(entryId, invAcc, 0, totalValue));
-        }
-
-        const entry: AccountingEntry = {
-          id: entryId,
-          date: new Date().toISOString(),
-          description: notes || `تسوية جردية للصنف ${product?.Name || product?.name} | فرق: ${diff}`,
-          TotalAmount: totalValue,
-          status: 'Posted',
-          sourceId: productId,
-          sourceType: 'ADJUSTMENT',
-          lines,
-          lastModified: new Date().toISOString()
-        };
-
-        await db.saveAccountingEntry(entry);
-
-        for (const line of entry.lines) {
-          await db.updateAccountBalance(line.accountId, line.debit - line.credit);
-        }
-
-        // Event and Audit
-        await ProjectionEventBus.publish('INVENTORY_ADJUSTED', refId, { productId, warehouseId, diff, totalValue });
-        await AuditService.log({
-          action: 'CREATE',
-          module: 'INVENTORY',
-          transactionUuid,
-          after: { refId, productId, warehouseId, diff, actualQty },
-          recordId: refId
-        });
-
-        await this.markIdempotencyCompleted(transactionUuid);
-        return { success: true, refId };
-      }, transactionUuid, ADJUSTMENT_WORKFLOW_TABLES);
-    } catch (err: any) {
-      await this.releaseIdempotencyKey(transactionUuid);
-      FaultService.log({
-        type: 'ADJUSTMENT_FATAL',
-        module: 'UNIFIED_WORKFLOW_ORCHESTRATOR',
-        message: `Inventory adjustment failed: ${err.message || String(err)}`,
-        payload: params,
-        stack: err.stack
-      });
-      throw err;
-    }
+    return {
+      success: true,
+      refId: result.data!.adjustmentId
+    };
   }
 
   // =========================================================================
-  // 4. SUPPLIER PAYMENT WORKFLOW
+  // 4. SUPPLIER PAYMENT WORKFLOW (Delegated to VoucherWorkflow)
   // =========================================================================
   public static async processSupplierPayment(
     params: WorkflowVoucherParams
   ): Promise<{ success: boolean; payment: Payment }> {
-    await this.checkTrialLimit();
-    if (params.amount <= 0) throw new Error('المبلغ يجب أن يكون أكبر من صفر');
-    if (!params.partnerId) throw new Error('يرجى اختيار المورد');
-
     const transactionUuid = params.transactionUuid || generateTransactionUuid('PAYMENT');
-    await this.acquireIdempotencyKey(transactionUuid);
 
-    const id = `PAY-${Date.now()}`;
-    const date = params.date || new Date().toISOString();
+    const result = await WorkflowOrchestrator.execute(
+      voucherWorkflow,
+      {
+        type: 'PAYMENT',
+        partnerId: params.partnerId,
+        amount: params.amount,
+        notes: params.notes,
+        date: params.date,
+        paymentMethod: params.paymentMethod,
+        allocations: params.allocations
+      },
+      { idempotencyKey: transactionUuid }
+    );
 
-    const payment: Payment = {
-      id,
-      date,
-      supplier_id: params.partnerId,
-      amount: params.amount,
-      notes: params.notes,
-      paymentMethod: params.paymentMethod || 'CASH',
-      created_at: new Date().toISOString(),
-      lastModified: new Date().toISOString()
-    };
-
-    try {
-      return await TransactionService.runSafe(id, async () => {
-        const voucherRecord: Voucher = {
-          id,
-          voucherId: id,
-          type: 'PAYMENT',
-          amount: params.amount,
-          partnerId: params.partnerId,
-          notes: params.notes,
-          date,
-          Created_At: new Date().toISOString(),
-          lastModified: new Date().toISOString(),
-          syncStatus: 'NEW'
-        };
-        await db.db.vouchers.put(voucherRecord);
-
-        // Process invoice allocations if provided
-        if (params.allocations) {
-          for (const invoiceId in params.allocations) {
-            const item = params.allocations[invoiceId];
-            const allocAmount = typeof item === 'number' ? item : item?.amount || 0;
-            if (allocAmount > 0) {
-              await PurchaseRepository.updatePaidAmount(invoiceId, allocAmount);
-            }
-          }
-        }
-
-        // Update supplier balance
-        if (params.partnerId && params.partnerId !== 'مورد نقدي') {
-          await db.updateSupplierBalance(params.partnerId, -params.amount);
-          await SupplierRepository.postToLedger({
-            id: db.generateId('PL'),
-            partnerId: params.partnerId,
-            date,
-            description: `سند صرف للمورد #${id}`,
-            debit: params.amount,
-            credit: 0,
-            referenceId: id
-          });
-        }
-
-        // Financial transaction
-        await FinancialTransactionRepository.record({
-          id: db.generateId('FT'),
-          Transaction_Type: 'Payment',
-          Reference_ID: id,
-          Reference_Table: 'Vouchers',
-          Entity_Type: 'Supplier',
-          Entity_Name: params.partnerId,
-          Amount: params.amount,
-          Direction: 'Debit',
-          Transaction_Date: date,
-          Notes: params.notes || `سند صرف للمورد #${id}`
-        });
-
-        // Accounting entry
-        const entry = await accountingEngine.generateVoucherEntry({
-          type: 'PAYMENT',
-          amount: params.amount,
-          partnerId: params.partnerId,
-          date,
-          refId: id,
-          notes: params.notes,
-          paymentMethod: params.paymentMethod
-        });
-        await db.addJournalEntry(entry);
-
-        await ProjectionEventBus.publish('SUPPLIER_PAYMENT_PROCESSED', id, { supplierId: params.partnerId, amount: params.amount });
-        await AuditService.log({
-          action: 'CREATE',
-          module: 'SUPPLIER_PAYMENT',
-          transactionUuid,
-          after: payment,
-          recordId: id
-        });
-
-        await this.markIdempotencyCompleted(transactionUuid);
-        return { success: true, payment };
-      }, transactionUuid, VOUCHER_WORKFLOW_TABLES);
-    } catch (err: any) {
-      await this.releaseIdempotencyKey(transactionUuid);
-      FaultService.log({
-        type: 'PAYMENT_FATAL',
-        module: 'UNIFIED_WORKFLOW_ORCHESTRATOR',
-        message: `Supplier payment workflow failed: ${err.message || String(err)}`,
-        payload: params,
-        stack: err.stack
-      });
-      throw err;
+    if (!result.success) {
+      throw new Error(result.error?.message || 'فشل معالجة سند الصرف');
     }
+
+    return {
+      success: true,
+      payment: result.data!.document as Payment
+    };
   }
 
   // =========================================================================
-  // 5. CUSTOMER RECEIPT WORKFLOW
+  // 5. CUSTOMER RECEIPT WORKFLOW (Delegated to VoucherWorkflow)
   // =========================================================================
   public static async processCustomerReceipt(
     params: WorkflowVoucherParams
   ): Promise<{ success: boolean; receipt: Receipt }> {
-    await this.checkTrialLimit();
-    if (params.amount <= 0) throw new Error('المبلغ يجب أن يكون أكبر من صفر');
-    if (!params.partnerId) throw new Error('يرجى اختيار العميل');
-
     const transactionUuid = params.transactionUuid || generateTransactionUuid('RECEIPT');
-    await this.acquireIdempotencyKey(transactionUuid);
 
-    const id = `RCPT-${Date.now()}`;
-    const date = params.date || new Date().toISOString();
+    const result = await WorkflowOrchestrator.execute(
+      voucherWorkflow,
+      {
+        type: 'RECEIPT',
+        partnerId: params.partnerId,
+        amount: params.amount,
+        notes: params.notes,
+        date: params.date,
+        paymentMethod: params.paymentMethod,
+        allocations: params.allocations
+      },
+      { idempotencyKey: transactionUuid }
+    );
 
-    const receipt: Receipt = {
-      id,
-      date,
-      customer_id: params.partnerId,
-      amount: params.amount,
-      notes: params.notes,
-      paymentMethod: params.paymentMethod || 'CASH',
-      created_at: new Date().toISOString(),
-      lastModified: new Date().toISOString()
-    };
-
-    try {
-      return await TransactionService.runSafe(id, async () => {
-        const voucherRecord: Voucher = {
-          id,
-          voucherId: id,
-          type: 'RECEIPT',
-          amount: params.amount,
-          partnerId: params.partnerId,
-          notes: params.notes,
-          date,
-          Created_At: new Date().toISOString(),
-          lastModified: new Date().toISOString(),
-          syncStatus: 'NEW'
-        };
-        await db.db.vouchers.put(voucherRecord);
-
-        // Process invoice allocations if provided
-        if (params.allocations) {
-          for (const saleId in params.allocations) {
-            const item = params.allocations[saleId];
-            const allocAmount = typeof item === 'number' ? item : item?.amount || 0;
-            if (allocAmount > 0) {
-              await SalesRepository.updatePaidAmount(saleId, allocAmount);
-            }
-          }
-        }
-
-        // Update customer balance
-        if (params.partnerId && params.partnerId !== 'عميل نقدي') {
-          await db.updateCustomerBalance(params.partnerId, -params.amount);
-        }
-
-        // Financial transaction
-        await FinancialTransactionRepository.record({
-          id: db.generateId('FT'),
-          Transaction_Type: 'Receipt',
-          Reference_ID: id,
-          Reference_Table: 'Vouchers',
-          Entity_Type: 'Customer',
-          Entity_Name: params.partnerId,
-          Amount: params.amount,
-          Direction: 'Credit',
-          Transaction_Date: date,
-          Notes: params.notes || `سند قبض من العميل #${id}`
-        });
-
-        // Accounting Entry
-        const entry = await accountingEngine.generateVoucherEntry({
-          type: 'RECEIPT',
-          amount: params.amount,
-          partnerId: params.partnerId,
-          date,
-          refId: id,
-          notes: params.notes,
-          paymentMethod: params.paymentMethod
-        });
-        await db.addJournalEntry(entry);
-
-        await ProjectionEventBus.publish('CUSTOMER_RECEIPT_PROCESSED', id, { customerId: params.partnerId, amount: params.amount });
-        await AuditService.log({
-          action: 'CREATE',
-          module: 'CUSTOMER_RECEIPT',
-          transactionUuid,
-          after: receipt,
-          recordId: id
-        });
-
-        await this.markIdempotencyCompleted(transactionUuid);
-        return { success: true, receipt };
-      }, transactionUuid, VOUCHER_WORKFLOW_TABLES);
-    } catch (err: any) {
-      await this.releaseIdempotencyKey(transactionUuid);
-      FaultService.log({
-        type: 'RECEIPT_FATAL',
-        module: 'UNIFIED_WORKFLOW_ORCHESTRATOR',
-        message: `Customer receipt workflow failed: ${err.message || String(err)}`,
-        payload: params,
-        stack: err.stack
-      });
-      throw err;
+    if (!result.success) {
+      throw new Error(result.error?.message || 'فشل معالجة سند القبض');
     }
+
+    return {
+      success: true,
+      receipt: result.data!.document as Receipt
+    };
   }
 
   // =========================================================================
-  // 6. STOCK TRANSFER WORKFLOW
+  // 6. STOCK TRANSFER WORKFLOW (Delegated to InventoryTransferWorkflow)
   // =========================================================================
   public static async processStockTransferCreate(
     params: WorkflowStockTransferCreateParams
   ): Promise<{ success: boolean; transferId: string }> {
-    await this.checkTrialLimit();
-    if (!params.sourceBranchId || !params.targetBranchId) throw new Error("يجب تحديد فرع المصدر وفرع الوجهة");
-    if (params.sourceBranchId === params.targetBranchId) throw new Error("لا يمكن تحويل المخزون لنفس الفرع");
-
     const transactionUuid = params.transactionUuid || generateTransactionUuid('INVENTORY');
-    await this.acquireIdempotencyKey(transactionUuid);
 
-    const transferId = `TRF-${Date.now()}`;
-    const now = new Date().toISOString();
-    const currentUserId = authService.getCurrentUser()?.User_Email || "مشرف النظام";
+    const result = await WorkflowOrchestrator.execute(
+      inventoryTransferWorkflow,
+      {
+        sourceBranchId: params.sourceBranchId,
+        targetBranchId: params.targetBranchId,
+        notes: params.notes,
+        items: params.items
+      },
+      { idempotencyKey: transactionUuid }
+    );
 
-    try {
-      return await TransactionService.runSafe(transferId, async () => {
-        const transferRecord = {
-          id: transferId,
-          sourceBranchId: params.sourceBranchId,
-          targetBranchId: params.targetBranchId,
-          status: "DRAFT" as TransferStatus,
-          createdBy: currentUserId,
-          notes: params.notes || "تحويل مخزني بين الفروع",
-          createdAt: now,
-          updatedAt: now,
-        };
-
-        await db.db.branchTransfers.put(transferRecord);
-
-        const transferItems = params.items.map(item => ({
-          id: `TRFI-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-          transferId,
-          productId: item.productId,
-          qty: item.qty,
-          receivedQty: 0,
-          batchNumber: item.batchNumber || "BATCH-GEN",
-          expiryDate: item.expiryDate || new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-          createdAt: now,
-        }));
-
-        await db.db.branchTransferItems.bulkAdd(transferItems);
-
-        await ProjectionEventBus.publish('STOCK_TRANSFER_CREATED', transferId, { source: params.sourceBranchId, target: params.targetBranchId });
-        await AuditService.log({
-          action: 'CREATE',
-          module: 'STOCK_TRANSFER',
-          transactionUuid,
-          after: { transferRecord, transferItems },
-          recordId: transferId
-        });
-
-        await this.markIdempotencyCompleted(transactionUuid);
-        return { success: true, transferId };
-      }, transactionUuid, STOCK_TRANSFER_WORKFLOW_TABLES);
-    } catch (err: any) {
-      await this.releaseIdempotencyKey(transactionUuid);
-      FaultService.log({
-        type: 'TRANSFER_FATAL',
-        module: 'UNIFIED_WORKFLOW_ORCHESTRATOR',
-        message: `Stock transfer creation failed: ${err.message || String(err)}`,
-        payload: params,
-        stack: err.stack
-      });
-      throw err;
+    if (!result.success) {
+      throw new Error(result.error?.message || 'فشل إنشاء طلب التحويل');
     }
+
+    return {
+      success: true,
+      transferId: result.data!.transferId
+    };
   }
 
   public static async processStockTransferStatusUpdate(
@@ -891,7 +432,26 @@ export class UnifiedBusinessWorkflowOrchestrator {
             rawTransfer.shippedAt = now;
 
             for (const item of rawItems) {
-              await this.updateBranchStockQty(rawTransfer.sourceBranchId, item.productId, -item.qty);
+              const srcWarehouse = (rawTransfer as any).sourceWarehouseId || 
+                (rawTransfer.sourceBranchId.startsWith('WH-') ? rawTransfer.sourceBranchId : `WH-${rawTransfer.sourceBranchId}`);
+
+              await unifiedInventoryMutationEngine.executeMutation({
+                productId: item.productId,
+                warehouseId: srcWarehouse,
+                delta: -Math.abs(item.qty),
+                docType: 'TRANSFER',
+                docId: transferId,
+                movementType: 'TRANSFER_OUT',
+                batchNumber: item.batchNumber,
+                expiryDate: item.expiryDate,
+                userId: updatedBy,
+                tenantId: (rawTransfer as any).tenantId || 'TEN-DEV-001',
+                branchId: rawTransfer.sourceBranchId,
+                transactionUuid: `${transferId}-${item.productId}-OUT`,
+                notes: `شحن تحويل مخزني من الفرع ${rawTransfer.sourceBranchId} إلى الفرع ${rawTransfer.targetBranchId}`
+              });
+
+              // branchInventory is now canonically handled by the mutation engine
             }
           } else if (newStatus === "RECEIVED") {
             rawTransfer.receivedBy = updatedBy;
@@ -903,12 +463,51 @@ export class UnifiedBusinessWorkflowOrchestrator {
                 : item.qty;
 
               await db.db.branchTransferItems.update(item.id, { receivedQty: recQty });
-              await this.updateBranchStockQty(rawTransfer.targetBranchId, item.productId, recQty);
+
+              const targetWarehouse = (rawTransfer as any).targetWarehouseId || 
+                (rawTransfer.targetBranchId.startsWith('WH-') ? rawTransfer.targetBranchId : `WH-${rawTransfer.targetBranchId}`);
+
+              await unifiedInventoryMutationEngine.executeMutation({
+                productId: item.productId,
+                warehouseId: targetWarehouse,
+                delta: Math.abs(recQty),
+                docType: 'TRANSFER',
+                docId: transferId,
+                movementType: 'TRANSFER_IN',
+                batchNumber: item.batchNumber,
+                expiryDate: item.expiryDate,
+                userId: updatedBy,
+                tenantId: (rawTransfer as any).tenantId || 'TEN-DEV-001',
+                branchId: rawTransfer.targetBranchId,
+                transactionUuid: `${transferId}-${item.productId}-IN`,
+                notes: `استلام تحويل مخزني بالفرع ${rawTransfer.targetBranchId} من الفرع ${rawTransfer.sourceBranchId}`
+              });
+
+              // branchInventory is now canonically handled by the mutation engine
             }
           } else if (newStatus === "CANCELLED") {
             if (previousStatus === "IN_TRANSIT") {
               for (const item of rawItems) {
-                await this.updateBranchStockQty(rawTransfer.sourceBranchId, item.productId, item.qty);
+                const srcWarehouse = (rawTransfer as any).sourceWarehouseId || 
+                  (rawTransfer.sourceBranchId.startsWith('WH-') ? rawTransfer.sourceBranchId : `WH-${rawTransfer.sourceBranchId}`);
+
+                await unifiedInventoryMutationEngine.executeMutation({
+                  productId: item.productId,
+                  warehouseId: srcWarehouse,
+                  delta: Math.abs(item.qty),
+                  docType: 'TRANSFER',
+                  docId: transferId,
+                  movementType: 'TRANSFER_IN',
+                  batchNumber: item.batchNumber,
+                  expiryDate: item.expiryDate,
+                  userId: updatedBy,
+                  tenantId: (rawTransfer as any).tenantId || 'TEN-DEV-001',
+                  branchId: rawTransfer.sourceBranchId,
+                  transactionUuid: `${transferId}-${item.productId}-CANCEL`,
+                  notes: `إلغاء تحويل مخزني واستعادة الكمية للفرع ${rawTransfer.sourceBranchId}`
+                });
+
+                // branchInventory is now canonically handled by the mutation engine
               }
             }
           }
@@ -960,8 +559,15 @@ export class UnifiedBusinessWorkflowOrchestrator {
 
         await AccountingRepository.deleteEntriesBySource(invoiceId);
 
-        await stockEngine.reverseMovements(invoiceId);
-        await fifoEngine.reverseFIFO(invoiceId);
+        // 🚨 MIGRATE: Replace legacy destructive deletions with canonical compensating movements
+        await unifiedInventoryMutationEngine.executeReversal({
+          originalDocumentId: invoiceId,
+          originalDocumentType: type === 'SALE' ? 'SALE' : 'PURCHASE',
+          reason: `إلغاء ترحيل الفاتورة رقم ${invoiceId}`,
+          userId: user?.id || 'admin',
+          tenantId: user?.tenantId || 'TEN-DEV-001',
+          transactionUuid: `UNPOST-${invoiceId}-${Date.now()}`
+        });
 
         const total = (invoice as any).finalTotal || (invoice as any).totalAmount;
         const partnerId = type === 'SALE' ? (invoice as any).customerId : (invoice as any).partnerId;
@@ -1079,7 +685,7 @@ export class UnifiedBusinessWorkflowOrchestrator {
   }
 
   // Helper methods
-  private static createJournalLine(entryId: string, accountId: string, debit: number, credit: number): JournalLine {
+  public static createJournalLine(entryId: string, accountId: string, debit: number, credit: number): JournalLine {
     const id = db.generateId('JL');
     return {
       id,
@@ -1092,32 +698,5 @@ export class UnifiedBusinessWorkflowOrchestrator {
       type: debit > 0 ? 'DEBIT' : 'CREDIT',
       amount: debit > 0 ? debit : credit
     };
-  }
-
-  private static async updateBranchStockQty(branchId: string, productId: string, deltaQty: number): Promise<void> {
-    const inv = await db.db.branchInventory
-      .where('[branchId+productId]')
-      .equals([branchId, productId])
-      .first();
-
-    const now = new Date().toISOString();
-    if (inv && inv.id) {
-      const newQty = Math.max(0, inv.stockQuantity + deltaQty);
-      await db.db.branchInventory.update(inv.id, {
-        stockQuantity: newQty,
-        updatedAt: now
-      });
-    } else {
-      await db.db.branchInventory.add({
-        id: `INV-${branchId}-${productId}`,
-        branchId,
-        productId,
-        stockQuantity: Math.max(0, deltaQty),
-        reorderPoint: 10,
-        reorderQuantity: 50,
-        createdAt: now,
-        updatedAt: now
-      });
-    }
   }
 }

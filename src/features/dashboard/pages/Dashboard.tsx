@@ -223,7 +223,7 @@ const Dashboard: React.FC<{ lang?: 'ar', onNavigate?: (view: any, params?: any) 
 
           <QuickActionBtn icon={<Wallet2 size={24} />} label="المحاسبة" onClick={() => onNavigate?.('accounting')} color="bg-amber-500" />
           <QuickActionBtn icon={<BarChart3 size={24} />} label="التقارير" onClick={goReports} color="bg-indigo-600" />
-          <QuickActionBtn icon={<ShieldCheck size={24} />} label="التدقيق" onClick={() => onNavigate?.('audit-history')} color="bg-emerald-600" />
+          <QuickActionBtn icon={<ShieldCheck size={24} />} label="التدقيق" onClick={() => onNavigate?.('audit-history', { from: 'dashboard' })} color="bg-emerald-600" />
           <QuickActionBtn icon={<History size={24} />} label="الأرشيف" onClick={() => onNavigate?.('invoices-archive')} color="bg-slate-500" />
         </div>
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../hooks/useAuth';
+import { configurationService } from '@/services/config/configurationService';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   User, Lock, Eye, EyeOff, ShieldAlert, Loader2, Info, Building2, HelpCircle, Check, ArrowRight
@@ -22,7 +23,7 @@ export default function LoginPage({ onSuccess }: LoginPageProps) {
   
   // Load remembered username if it exists
   useEffect(() => {
-    const remembered = localStorage.getItem('pharmaflow_remembered_username');
+    const remembered = configurationService.getSync<string>('pharmaflow_remembered_username');
     if (remembered) {
       setUsername(remembered);
       setIsRemembered(true);
@@ -45,9 +46,9 @@ export default function LoginPage({ onSuccess }: LoginPageProps) {
       
       // Handle "Remember Me"
       if (isRemembered) {
-        localStorage.setItem('pharmaflow_remembered_username', username);
+        configurationService.set('pharmaflow_remembered_username', username).catch(() => {});
       } else {
-        localStorage.removeItem('pharmaflow_remembered_username');
+        configurationService.delete('pharmaflow_remembered_username').catch(() => {});
       }
 
       // Check if user is active

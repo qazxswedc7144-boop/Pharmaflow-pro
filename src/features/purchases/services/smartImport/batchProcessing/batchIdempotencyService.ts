@@ -1,5 +1,6 @@
 // src/features/purchases/services/smartImport/batchProcessing/batchIdempotencyService.ts
 import { CanonicalResolutionResult } from './types';
+import { configurationService } from '@/services/config/configurationService';
 
 interface IdempotencyRecord {
   idempotencyKey: string;
@@ -63,19 +64,19 @@ export class BatchIdempotencyService {
     // Check in-memory cache first
     let record = this.memoryCache.get(key);
 
-    // Fallback to localStorage if in browser environment
-    if (!record && typeof window !== 'undefined' && window.localStorage) {
+    // Fallback to configurationService if in browser environment
+    if (!record) {
       try {
-        const stored = localStorage.getItem(key);
+        const stored = configurationService.getSync<IdempotencyRecord>(key);
         if (stored) {
-          record = JSON.parse(stored) as IdempotencyRecord;
+          record = stored;
           if (record && Date.now() > record.expiresAt) {
-            localStorage.removeItem(key);
+            configurationService.set(key, null).catch(() => {});
             record = undefined;
           }
         }
       } catch (err) {
-        console.warn('[BatchIdempotencyService] localStorage read error:', err);
+        console.warn('[BatchIdempotencyService] configurationService read error:', err);
       }
     }
 
@@ -132,13 +133,7 @@ export class BatchIdempotencyService {
 
     this.memoryCache.set(key, record);
 
-    if (typeof window !== 'undefined' && window.localStorage) {
-      try {
-        localStorage.setItem(key, JSON.stringify(record));
-      } catch (err) {
-        console.warn('[BatchIdempotencyService] localStorage write error:', err);
-      }
-    }
+    configurationService.set(key, record).catch(() => {});
   }
 
   /**
@@ -147,12 +142,6 @@ export class BatchIdempotencyService {
   static clearExecution(tenantId: string, idempotencyKey: string): void {
     const key = `${this.storageKeyPrefix}${tenantId}_${idempotencyKey}`;
     this.memoryCache.delete(key);
-    if (typeof window !== 'undefined' && window.localStorage) {
-      try {
-        localStorage.removeItem(key);
-      } catch {
-        // ignore
-      }
-    }
+    configurationService.set(key, null).catch(() => {});
   }
 }

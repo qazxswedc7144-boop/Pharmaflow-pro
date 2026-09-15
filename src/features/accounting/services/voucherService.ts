@@ -22,6 +22,18 @@ export const voucherService = {
       paymentMethod: data.paymentMethod
     });
     return res.payment;
+  },
+
+  cancelVoucher: async (data: { id: string; type: 'RECEIPT' | 'PAYMENT'; partnerId: string; amount: number; reason?: string }) => {
+    const { WorkflowOrchestrator } = await import('@/core/workflow');
+    const { voucherCancellationWorkflow } = await import('@/features/accounting/workflows/VoucherCancellationWorkflow');
+    return await WorkflowOrchestrator.execute(voucherCancellationWorkflow, {
+      id: data.id,
+      type: data.type,
+      partnerId: data.partnerId,
+      amount: data.amount,
+      reason: data.reason
+    });
   }
 };
 

@@ -1,4 +1,5 @@
 import { BaseAppError } from '../errors/BaseAppError';
+import { observabilityService } from '@/core/observability/observabilityService';
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'CRITICAL';
 
@@ -8,57 +9,40 @@ export class AppLogger {
   }
 
   public static debug(message: string, metadata?: Record<string, unknown>, module = 'SYSTEM'): void {
-    if (this.isProduction()) return; // Disable debug in production
-    console.debug(`[DEBUG] [${module}] [${new Date().toISOString()}] ${message}`, metadata || '');
+    if (this.isProduction()) return;
+    observabilityService.recordInfo(`[DEBUG] ${message}`, { feature: module }, metadata).catch(() => {});
   }
 
   public static info(message: string, metadata?: Record<string, unknown>, module = 'SYSTEM'): void {
-    console.info(`[INFO] [${module}] [${new Date().toISOString()}] ${message}`, metadata || '');
+    observabilityService.recordInfo(message, { feature: module }, metadata).catch(() => {});
   }
 
   public static warn(message: string, metadata?: Record<string, unknown>, module = 'SYSTEM'): void {
-    console.warn(`[WARN] [${module}] [${new Date().toISOString()}] ${message}`, metadata || '');
+    observabilityService.recordWarning(message, { feature: module }, metadata).catch(() => {});
   }
 
   public static error(errorOrMsg: string | BaseAppError | Error, metadata?: Record<string, unknown>, module = 'SYSTEM'): void {
-    if (errorOrMsg instanceof BaseAppError) {
-      console.error(
-        `[ERROR] [${errorOrMsg.module}] [${errorOrMsg.code}] [${errorOrMsg.timestamp}] ${errorOrMsg.message}`,
-        {
-          arabicMessage: errorOrMsg.arabicMessage,
-          severity: errorOrMsg.severity,
-          metadata: { ...errorOrMsg.metadata, ...metadata },
-          stack: errorOrMsg.stack,
-        }
-      );
-    } else if (errorOrMsg instanceof Error) {
-      console.error(`[ERROR] [${module}] [${new Date().toISOString()}] ${errorOrMsg.message}`, {
-        stack: errorOrMsg.stack,
-        metadata,
-      });
-    } else {
-      console.error(`[ERROR] [${module}] [${new Date().toISOString()}] ${errorOrMsg}`, metadata || '');
+    const err = typeof errorOrMsg === 'string'
+      ? new Error(errorOrMsg)
+      : errorOrMsg;
+
+    const feature = err instanceof BaseAppError ? err.module || module : module;
+    observabilityService.recordError(err, { feature }, undefined, 'ERROR').catch(() => {});
+    if (metadata) {
+      observabilityService.recordInfo(`Error Metadata for [${feature}]`, { feature }, metadata).catch(() => {});
     }
   }
 
   public static critical(errorOrMsg: string | BaseAppError | Error, metadata?: Record<string, unknown>, module = 'SYSTEM'): void {
-    if (errorOrMsg instanceof BaseAppError) {
-      console.error(
-        `[CRITICAL 🚨] [${errorOrMsg.module}] [${errorOrMsg.code}] [${errorOrMsg.timestamp}] ${errorOrMsg.message}`,
-        {
-          arabicMessage: errorOrMsg.arabicMessage,
-          severity: 'CRITICAL',
-          metadata: { ...errorOrMsg.metadata, ...metadata },
-          stack: errorOrMsg.stack,
-        }
-      );
-    } else if (errorOrMsg instanceof Error) {
-      console.error(`[CRITICAL 🚨] [${module}] [${new Date().toISOString()}] ${errorOrMsg.message}`, {
-        stack: errorOrMsg.stack,
-        metadata,
-      });
-    } else {
-      console.error(`[CRITICAL 🚨] [${module}] [${new Date().toISOString()}] ${errorOrMsg}`, metadata || '');
+    const err = typeof errorOrMsg === 'string'
+      ? new Error(errorOrMsg)
+      : errorOrMsg;
+
+    const feature = err instanceof BaseAppError ? err.module || module : module;
+    observabilityService.recordError(err, { feature }, undefined, 'CRITICAL').catch(() => {});
+    if (metadata) {
+      observabilityService.recordInfo(`Critical Error Metadata for [${feature}]`, { feature }, metadata).catch(() => {});
     }
   }
 }
+

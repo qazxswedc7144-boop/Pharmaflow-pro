@@ -5,10 +5,9 @@ import {
   Check, X, CheckCircle2, AlertCircle, RefreshCw 
 } from 'lucide-react';
 import { RoleItem, PermissionDefinition } from '../types';
-import { useAuthStore } from '../../../store/authStore';
+import { unifiedTransport } from '@/shared/network/transport/unifiedTransport';
 
 export const RoleManagement: React.FC = () => {
-  const { tenantId } = useAuthStore();
   const [roles, setRoles] = useState<RoleItem[]>([]);
   const [permissions, setPermissions] = useState<PermissionDefinition[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -25,29 +24,13 @@ export const RoleManagement: React.FC = () => {
   const fetchRolesAndPermissions = async () => {
     setIsLoading(true);
     try {
-      const [rolesRes, permsRes] = await Promise.all([
-        fetch('/api/rbac/roles', {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-            'x-tenant-id': tenantId || 'default-tenant'
-          }
-        }),
-        fetch('/api/rbac/permissions', {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-            'x-tenant-id': tenantId || 'default-tenant'
-          }
-        })
+      const [rData, pData] = await Promise.all([
+        unifiedTransport.get<any>('/api/rbac/roles'),
+        unifiedTransport.get<any>('/api/rbac/permissions')
       ]);
 
-      if (rolesRes.ok) {
-        const rData = await rolesRes.json();
-        if (rData.data) setRoles(rData.data);
-      }
-      if (permsRes.ok) {
-        const pData = await permsRes.json();
-        if (pData.data?.permissions) setPermissions(pData.data.permissions);
-      }
+      if (rData && rData.data) setRoles(rData.data);
+      if (pData && pData.data?.permissions) setPermissions(pData.data.permissions);
     } catch (err) {
       console.warn('[RoleMgmt] fetch error:', err);
     } finally {
@@ -82,20 +65,9 @@ export const RoleManagement: React.FC = () => {
   const handleDuplicate = async (role: RoleItem) => {
     const newName = `${role.name} (نسخة)`;
     try {
-      const res = await fetch(`/api/rbac/roles/${role.id}/duplicate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-          'x-tenant-id': tenantId || 'default-tenant'
-        },
-        body: JSON.stringify({ name: newName })
-      });
-
-      if (res.ok) {
-        setFeedback({ type: 'success', message: `تم استنساخ الدور بنجاح: ${newName}` });
-        fetchRolesAndPermissions();
-      }
+      await unifiedTransport.post(`/api/rbac/roles/${role.id}/duplicate`, { name: newName });
+      setFeedback({ type: 'success', message: `تم استنساخ الدور بنجاح: ${newName}` });
+      fetchRolesAndPermissions();
     } catch {
       setFeedback({ type: 'error', message: 'فشل استنساخ الدور' });
     }
@@ -110,18 +82,9 @@ export const RoleManagement: React.FC = () => {
     if (!confirm(`هل أنت متأكد من حذف الدور (${role.name}) نهائياً؟`)) return;
 
     try {
-      const res = await fetch(`/api/rbac/roles/${role.id}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-          'x-tenant-id': tenantId || 'default-tenant'
-        }
-      });
-
-      if (res.ok) {
-        setFeedback({ type: 'success', message: 'تم حذف الدور بنجاح.' });
-        fetchRolesAndPermissions();
-      }
+      await unifiedTransport.delete(`/api/rbac/roles/${role.id}`);
+      setFeedback({ type: 'success', message: 'تم حذف الدور بنجاح.' });
+      fetchRolesAndPermissions();
     } catch {
       setFeedback({ type: 'error', message: 'فشل حذف الدور' });
     }
@@ -135,55 +98,27 @@ export const RoleManagement: React.FC = () => {
     try {
       if (editingRole) {
         // Update
-        const res = await fetch(`/api/rbac/roles/${editingRole.id}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-            'x-tenant-id': tenantId || 'default-tenant'
-          },
-          body: JSON.stringify({
-            name: roleName.trim(),
-            description: roleDescription.trim(),
-            permissions: selectedPermissions
-          })
+        await unifiedTransport.put(`/api/rbac/roles/${editingRole.id}`, {
+          name: roleName.trim(),
+          description: roleDescription.trim(),
+          permissions: selectedPermissions
         });
-
-        if (res.ok) {
-          setFeedback({ type: 'success', message: 'تم تحديث الدور بنجاح.' });
-          setIsModalOpen(false);
-          fetchRolesAndPermissions();
-        } else {
-          const err = await res.json();
-          setFeedback({ type: 'error', message: err.error || 'فشل تحديث الدور' });
-        }
+        setFeedback({ type: 'success', message: 'تم تحديث الدور بنجاح.' });
+        setIsModalOpen(false);
+        fetchRolesAndPermissions();
       } else {
         // Create
-        const res = await fetch('/api/rbac/roles', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-            'x-tenant-id': tenantId || 'default-tenant'
-          },
-          body: JSON.stringify({
-            name: roleName.trim(),
-            description: roleDescription.trim(),
-            permissions: selectedPermissions
-          })
+        await unifiedTransport.post('/api/rbac/roles', {
+          name: roleName.trim(),
+          description: roleDescription.trim(),
+          permissions: selectedPermissions
         });
-
-        if (res.ok) {
-          setFeedback({ type: 'success', message: 'تم إنشاء الدور المخصص بنجاح.' });
-          setIsModalOpen(false);
-          fetchRolesAndPermissions();
-        } else {
-          const err = await res.json();
-          setFeedback({ type: 'error', message: err.error || 'فشل إنشاء الدور' });
-        }
+        setFeedback({ type: 'success', message: 'تم إنشاء الدور المخصص بنجاح.' });
+        setIsModalOpen(false);
+        fetchRolesAndPermissions();
       }
-    } catch {
-      setFeedback({ type: 'error', message: 'تعذر الاتصال بالخادم' });
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'فشل عملية حفظ الدور' });
     } finally {
       setIsSubmitting(false);
     }

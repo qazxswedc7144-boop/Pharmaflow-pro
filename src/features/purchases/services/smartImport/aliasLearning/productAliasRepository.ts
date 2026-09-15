@@ -378,4 +378,108 @@ export class ProductAliasRepository {
 
     return existing;
   }
+
+  /**
+   * Finds a product alias for a given tenant, supplier, and raw text
+   */
+  static async findProductAlias(tenantId: string, supplierId: string | undefined, rawAlias: string): Promise<ProductAlias | null> {
+    const norm = AliasNormalization.normalize(rawAlias);
+    const key = this.buildProductAliasKey(tenantId, supplierId, norm);
+    const existing = this.productAliasStore.get(key);
+    if (existing) return existing;
+
+    try {
+      if (db.productAliases && typeof db.productAliases.where === 'function') {
+        const found = await db.productAliases
+          .where('[tenantId+supplierId+aliasNormalized]')
+          .equals([tenantId || 'default-tenant', supplierId || 'GLOBAL', norm])
+          .first();
+        if (found) {
+          this.productAliasStore.set(key, found);
+          return found;
+        }
+      }
+    } catch {
+      // Fallback
+    }
+
+    return null;
+  }
+
+  /**
+   * Checks if an alias mapping to a product ID has been explicitly rejected
+   */
+  static async isAliasRejected(tenantId: string, supplierId: string | undefined, rawAlias: string, productId: string): Promise<boolean> {
+    const norm = AliasNormalization.normalize(rawAlias);
+    const key = this.buildRejectionKey(tenantId, supplierId, norm, productId);
+    if (this.rejectionStore.has(key)) return true;
+
+    try {
+      if (db.aliasRejections && typeof db.aliasRejections.where === 'function') {
+        const found = await db.aliasRejections
+          .where('[tenantId+aliasNormalized+rejectedProductId]')
+          .equals([tenantId || 'default-tenant', norm, productId])
+          .first();
+        if (found) {
+          this.rejectionStore.set(key, found);
+          return true;
+        }
+      }
+    } catch {
+      // Fallback
+    }
+
+    return false;
+  }
+
+  /**
+   * Convenience alias for saveProductAlias
+   */
+  static async upsertProductAlias(input: {
+    tenantId: string;
+    branchId?: string;
+    supplierId?: string;
+    productId: string;
+    rawAlias: string;
+    isGlobal?: boolean;
+    confidenceScore?: number;
+    confirmationCount?: number;
+    usageCount?: number;
+    source?: AliasSource;
+    userId?: string;
+  }): Promise<{ alias: ProductAlias; isConflict: boolean; previousProductId?: string }> {
+    return this.saveProductAlias({
+      tenantId: input.tenantId,
+      branchId: input.branchId,
+      supplierId: input.supplierId,
+      productId: input.productId,
+      aliasRaw: input.rawAlias,
+      isGlobal: input.isGlobal,
+      source: input.source,
+      userId: input.userId
+    });
+  }
+
+  /**
+   * Convenience alias for saveCatalogReference
+   */
+  static async upsertSupplierProductRef(input: {
+    tenantId: string;
+    supplierId: string;
+    productId: string;
+    supplierProductCode: string;
+    supplierProductName?: string;
+    barcode?: string;
+    lastPurchasePrice?: number;
+  }): Promise<SupplierProductReference> {
+    return this.saveCatalogReference({
+      tenantId: input.tenantId,
+      supplierId: input.supplierId,
+      productId: input.productId,
+      supplierProductCode: input.supplierProductCode,
+      supplierProductName: input.supplierProductName || input.supplierProductCode,
+      barcode: input.barcode,
+      lastPurchasePrice: input.lastPurchasePrice
+    });
+  }
 }

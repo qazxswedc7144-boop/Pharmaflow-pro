@@ -4,7 +4,8 @@
 import { ReportEngine } from '@/services/reports/reportEngine';
 import { ExportService } from '@/services/data/exportService';
 import { db } from '@/core/db';
-import { authService } from '@/features/auth/services/authService';
+import { TokenProvider } from '@/services/auth/tokenProvider';
+import { unifiedTransport } from '@/shared/network/transport/unifiedTransport';
 
 export type ReportType =
   | 'balance-sheet'
@@ -82,24 +83,12 @@ export class EnterpriseReportingService {
    * Retrieves active tenant and auth headers for reporting requests
    */
   private static getAuthContext() {
-    let user: any = null;
-    try {
-      user = authService.getCurrentUser();
-    } catch {
-      // Ignored in test environment
-    }
-    
-    let token = '';
-    if (typeof localStorage !== 'undefined') {
-      try {
-        token = localStorage.getItem('token') || localStorage.getItem('auth_token') || '';
-      } catch {
-        // Ignored
-      }
-    }
+    const session = TokenProvider.getCurrentSession();
+    const user = session.user;
+    const token = TokenProvider.getAccessToken() || '';
 
-    const tenantId = user?.TenantId || user?.tenantId || 'DEFAULT_PHARMA_TENANT';
-    const userId = user?.id || user?.User_ID || 'admin';
+    const tenantId = session.tenantId || user?.tenant_id || user?.tenantId || 'DEFAULT_PHARMA_TENANT';
+    const userId = user?.id || user?.user_id || 'admin';
     const userRole = user?.Role || user?.role || 'ADMIN';
 
     return {
@@ -123,54 +112,44 @@ export class EnterpriseReportingService {
 
     // 1. Attempt authoritative server-side report build
     try {
-      const response = await fetch(this.getApiUrl('/build'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${auth.token}`
-        },
-        body: JSON.stringify({
-          reportType,
+      const json = await unifiedTransport.post<any>(this.getApiUrl('/build'), {
+        reportType,
+        tenantId: auth.tenantId,
+        userId: auth.userId,
+        userRole: auth.userRole,
+        branchId: filters.branchId || null,
+        filters: {
           tenantId: auth.tenantId,
-          userId: auth.userId,
-          userRole: auth.userRole,
           branchId: filters.branchId || null,
-          filters: {
-            tenantId: auth.tenantId,
-            branchId: filters.branchId || null,
-            startDate: filters.startDate,
-            endDate: filters.endDate,
-            asOfDate: filters.asOfDate || filters.endDate,
-            search: filters.search
-          },
-          bypassCache: filters.bypassCache ?? false
-        })
+          startDate: filters.startDate,
+          endDate: filters.endDate,
+          asOfDate: filters.asOfDate || filters.endDate,
+          search: filters.search
+        },
+        bypassCache: filters.bypassCache ?? false
       });
 
-      if (response.ok) {
-        const json = await response.json();
-        if (json.success && json.data) {
-          return {
-            success: true,
-            reportType,
-            data: json.data,
-            syncMetadata: json.syncMetadata || {
-              overallState: 'CLOUD_AUTHORITATIVE',
-              hasUnsyncedData: false,
-              hasConflictedData: false,
-              authoritativeRecordsCount: 100,
-              syncedRecordsCount: 100,
-              unsyncedRecordsCount: 0,
-              conflictedRecordsCount: 0,
-              asOfServerTimestamp: Date.now(),
-              source: 'ENTERPRISE_CORE',
-              freshnessSeconds: 0
-            },
-            generatedAt: json.generatedAt || new Date().toISOString(),
-            executionTimeMs: json.executionTimeMs || (Date.now() - startTime),
-            source: 'ENTERPRISE_SERVER'
-          };
-        }
+      if (json && json.success && json.data) {
+        return {
+          success: true,
+          reportType,
+          data: json.data,
+          syncMetadata: json.syncMetadata || {
+            overallState: 'CLOUD_AUTHORITATIVE',
+            hasUnsyncedData: false,
+            hasConflictedData: false,
+            authoritativeRecordsCount: 100,
+            syncedRecordsCount: 100,
+            unsyncedRecordsCount: 0,
+            conflictedRecordsCount: 0,
+            asOfServerTimestamp: Date.now(),
+            source: 'ENTERPRISE_CORE',
+            freshnessSeconds: 0
+          },
+          generatedAt: json.generatedAt || new Date().toISOString(),
+          executionTimeMs: json.executionTimeMs || (Date.now() - startTime),
+          source: 'ENTERPRISE_SERVER'
+        };
       }
     } catch (serverErr) {
       console.warn('[EnterpriseReportingService] Server API unavailable, gracefully switching to client fallback engine:', serverErr);
@@ -352,14 +331,9 @@ export class EnterpriseReportingService {
   public static async fetchBranches(): Promise<{ id: string; name: string; code?: string }[]> {
     const auth = this.getAuthContext();
     try {
-      const response = await fetch(this.getApiUrl(`/meta/branches?tenantId=${auth.tenantId}`), {
-        headers: { 'Authorization': `Bearer ${auth.token}` }
-      });
-      if (response.ok) {
-        const json = await response.json();
-        if (json.success && Array.isArray(json.data) && json.data.length > 0) {
-          return json.data;
-        }
+      const json = await unifiedTransport.get<any>(this.getApiUrl(`/meta/branches?tenantId=${auth.tenantId}`));
+      if (json && json.success && Array.isArray(json.data) && json.data.length > 0) {
+        return json.data;
       }
     } catch (e) {
       console.warn('[EnterpriseReportingService] Failed to load server branches, using local list:', e);
@@ -379,15 +353,8 @@ export class EnterpriseReportingService {
   public static async clearCache(): Promise<boolean> {
     const auth = this.getAuthContext();
     try {
-      const response = await fetch(this.getApiUrl('/cache/clear'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${auth.token}`
-        },
-        body: JSON.stringify({ tenantId: auth.tenantId })
-      });
-      return response.ok;
+      const json = await unifiedTransport.post<any>(this.getApiUrl('/cache/clear'), { tenantId: auth.tenantId });
+      return !!json;
     } catch (e) {
       console.error('[EnterpriseReportingService] Cache clear error:', e);
       return false;
@@ -409,13 +376,11 @@ export class EnterpriseReportingService {
 
     // Attempt server-side export first
     try {
-      const response = await fetch(this.getApiUrl('/export'), {
+      const response = await unifiedTransport.request<Response>({
+        url: this.getApiUrl('/export'),
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${auth.token}`
-        },
-        body: JSON.stringify({
+        raw: true,
+        body: {
           reportType,
           exportFormat: format,
           tenantId: auth.tenantId,
@@ -429,7 +394,7 @@ export class EnterpriseReportingService {
             endDate: filters.endDate
           },
           customTitle: reportTitle
-        })
+        }
       });
 
       if (response.ok) {

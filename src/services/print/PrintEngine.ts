@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { InvoiceTemplate, InvoiceItem, InvoiceTemplateProps } from '@/components/print/InvoiceTemplate';
 import { db } from '@/core/db';
 import { CurrencyService } from '@/services/localization/CurrencyService';
+import { configurationService } from '@/services/config/configurationService';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -59,7 +60,7 @@ export const PrintEngine = {
       finalMode = '80mm';
     } else if (mode === 'THERMAL') {
       // Auto-format based on paper size saved in settings
-      const savedProfile = localStorage.getItem('saas_printer_profile') as any || '80mm';
+      const savedProfile = configurationService.getSync('user.print_size') || '80mm';
       finalMode = savedProfile === 'a4' ? 'A4' : (savedProfile === '58mm' ? '58mm' : '80mm');
     }
 

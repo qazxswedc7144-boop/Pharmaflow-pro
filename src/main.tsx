@@ -14,8 +14,10 @@ console.log("[BOOT] Loader script starting module evaluation...");
 // Initiate Phase 3 Enterprise offline synchronization worker 
 import { LockService } from '@features/locking/lock.service';
 import { SystemOrchestrator } from '@/services/system/SystemOrchestrator';
+import { configurationService } from '@/services/config/configurationService';
 
 try {
+  configurationService.initialize().catch(err => console.error("[CONFIG SERVICE] Initialization error:", err));
   LockService.initialize().catch(err => console.error("[LOCK MANAGER] Initialization error:", err));
   SystemOrchestrator.recoverIdempotencyKeys().catch(err => console.error("[IDEMPOTENCY RECOVERY] Error recovering stuck transactions:", err));
   if (typeof window !== "undefined") {

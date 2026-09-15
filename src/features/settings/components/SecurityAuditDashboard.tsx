@@ -192,13 +192,23 @@ interface LogEntry {
 }
 
 interface SecurityAuditDashboardProps {
-  onNavigate?: (v: string, params?: any) => void;
+  onNavigate?: (v: string, params?: any, options?: any) => void;
   initialTab?: 'matrix' | 'pentest' | 'api' | 'firestore' | 'logs' | 'risks';
+  from?: string;
 }
 
-export default function SecurityAuditDashboard({ onNavigate, initialTab }: SecurityAuditDashboardProps) {
+export default function SecurityAuditDashboard({ onNavigate, initialTab, from }: SecurityAuditDashboardProps) {
   const { profile } = useAuth();
   const [activeTab, setActiveTab] = useState<'matrix' | 'pentest' | 'api' | 'firestore' | 'logs' | 'risks'>(initialTab || 'matrix');
+
+  useEffect(() => {
+    // Reset window and any enclosing scroll container immediately to 0
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+    const mainEl = document.querySelector('main');
+    if (mainEl) {
+      mainEl.scrollTop = 0;
+    }
+  }, []);
 
   useEffect(() => {
     if (initialTab) {
@@ -444,8 +454,8 @@ export default function SecurityAuditDashboard({ onNavigate, initialTab }: Secur
         title="مدقق ومصفوفة الأمان السيادي"
         subtitle="لوحة الأدلة للأمان والتدقيق الشامل في صلاحيات وقيود تطبيق PharmaFlow ERP"
         icon={ShieldCheck}
-        onBack={onNavigate ? () => onNavigate('settings') : undefined}
-        backTitle="العودة للإعدادات"
+        onBack={onNavigate ? () => onNavigate(from || 'dashboard', null, { replace: true }) : undefined}
+        backTitle={from === 'settings' ? 'العودة للإعدادات' : 'العودة للرئيسية'}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <button 

@@ -16,6 +16,9 @@ export interface Branch extends DomainEntity {
   isActive?: boolean;
   managerName?: string;
   taxNumber?: string;
+  workingHours?: string;
+  allowedDiscount?: number;
+  status?: 'ONLINE' | 'OFFLINE' | 'SYNCING' | 'DEGRADED';
   
   // Compatibility fields
   is_main?: boolean;

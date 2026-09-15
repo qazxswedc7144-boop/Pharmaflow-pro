@@ -13,6 +13,7 @@ function isDbConnectionError(err: any): boolean {
     msg.includes("P1008") ||
     msg.includes("P1017") ||
     msg.includes("Can't reach database") || 
+    msg.includes("Database unavailable") ||
     msg.includes("ECONNREFUSED") ||
     msg.includes("database server") ||
     msg.includes("Closed") ||

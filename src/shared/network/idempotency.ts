@@ -1,5 +1,5 @@
 // src/shared/network/idempotency.ts
-import axios, { InternalAxiosRequestConfig } from "axios";
+import { unifiedTransport } from "@/shared/network/transport/unifiedTransport";
 
 /**
  * Generates an RFC4122 compliant UUID v4 string.
@@ -19,45 +19,28 @@ export function generateIdempotencyKey(): string {
 }
 
 /**
- * Enterprise pre-configured Axios instance
+ * Enterprise Compatibility Facade wrapping UnifiedTransport for Financial / Consolidation API calls.
  */
-export const financialApiClient = axios.create({
-  headers: {
-    "Content-Type": "application/json"
-  }
-});
-
-/**
- * Request Interceptor: Ensures any state-mutating requests (POST, PUT, DELETE) 
- * targeting critical paths automatically carries a unique Idempotency-Key.
- */
-financialApiClient.interceptors.request.use(
-  (config: InternalAxiosRequestConfig) => {
-    const isMutating = ["POST", "PUT", "DELETE", "PATCH"].includes(
-      config.method?.toUpperCase() || ""
-    );
-
-    if (isMutating) {
-      // Check if an idempotency key was already set manually
-      const existingKey = config.headers.get("Idempotency-Key") || config.headers["Idempotency-Key"];
-      
-      if (!existingKey) {
-        const key = generateIdempotencyKey();
-        config.headers.set("Idempotency-Key", key);
-      }
-    }
-    
-    // Auto-inject JWT token if present in localStorage to maintain authentication
-    if (typeof localStorage !== "undefined") {
-      const token = localStorage.getItem("pharmaflow_token");
-      if (token && !config.headers.Authorization) {
-        config.headers.set("Authorization", `Bearer ${token}`);
-      }
-    }
-
-    return config;
+export const financialApiClient = {
+  get: async <T = any>(url: string, options?: any): Promise<{ data: T }> => {
+    const data = await unifiedTransport.get<T>(url, { profile: 'FINANCIAL', ...options });
+    return { data };
   },
-  (error) => {
-    return Promise.reject(error);
+  post: async <T = any>(url: string, body?: any, options?: any): Promise<{ data: T }> => {
+    const data = await unifiedTransport.post<T>(url, body, { profile: 'FINANCIAL', ...options });
+    return { data };
+  },
+  put: async <T = any>(url: string, body?: any, options?: any): Promise<{ data: T }> => {
+    const data = await unifiedTransport.put<T>(url, body, { profile: 'FINANCIAL', ...options });
+    return { data };
+  },
+  delete: async <T = any>(url: string, options?: any): Promise<{ data: T }> => {
+    const data = await unifiedTransport.delete<T>(url, { profile: 'FINANCIAL', ...options });
+    return { data };
+  },
+  interceptors: {
+    request: { use: () => {} },
+    response: { use: () => {} }
   }
-);
+};
+

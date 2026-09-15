@@ -46,15 +46,22 @@ export interface ArchiveInvoice {
 interface InvoicesArchiveModuleProps {
   onNavigate?: (view: string, params?: Record<string, unknown>) => void;
   initialFilter?: 'ALL' | 'SALE' | 'PURCHASE';
+  initialSearch?: string;
+  initialId?: string;
 }
 
-const InvoicesArchiveModule: React.FC<InvoicesArchiveModuleProps> = ({ onNavigate, initialFilter = 'ALL' }) => {
+const InvoicesArchiveModule: React.FC<InvoicesArchiveModuleProps> = ({ 
+  onNavigate, 
+  initialFilter = 'ALL',
+  initialSearch = '',
+  initialId = ''
+}) => {
   const { currency, version, refreshGlobal, addToast } = useUI();
   const { setEditingInvoiceId } = useAppStore();
   const user = authService.getCurrentUser();
   const isAdmin = user?.Role === 'Admin';
   
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState(initialSearch || initialId || '');
   const [invoices, setInvoices] = useState<ArchiveInvoice[]>([]);
   const [finalTotals, setFinalTotals] = useState<Record<string, number>>({});
   const [lockedInvoices, setLockedInvoices] = useState<Record<string, boolean>>({});

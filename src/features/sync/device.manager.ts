@@ -5,6 +5,8 @@
 
 import { DeviceMetadata, SYNC_PROTOCOL_VERSION } from "./sync.types";
 import { getCurrentUserSession } from "@/core/db";
+import { configurationService } from "@/services/config/configurationService";
+import { unifiedTransport } from "@/shared/network/transport/unifiedTransport";
 
 const DEVICE_STORAGE_KEY = "pharmaflow_device_identity";
 
@@ -15,34 +17,55 @@ export class DeviceManager {
    * Generates or retrieves persistent device identity
    */
   static getDeviceIdentity(): DeviceMetadata {
-    if (this.cachedIdentity) {
-      return this.cachedIdentity;
-    }
-
     const session = getCurrentUserSession();
 
-    if (typeof window !== "undefined" && window.localStorage) {
+    if (this.cachedIdentity) {
+      return {
+        ...this.cachedIdentity,
+        tenantId: session.tenantId || this.cachedIdentity.tenantId,
+        branchId: session.branchId || this.cachedIdentity.branchId,
+        userId: session.userId || this.cachedIdentity.userId
+      };
+    }
+
+    if (typeof localStorage !== "undefined") {
       try {
-        const stored = localStorage.getItem(DEVICE_STORAGE_KEY);
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          if (parsed && parsed.deviceId) {
+        const raw = localStorage.getItem(DEVICE_STORAGE_KEY);
+        if (raw) {
+          const stored = JSON.parse(raw);
+          if (stored && stored.deviceId) {
             this.cachedIdentity = {
-              ...parsed,
-              tenantId: session.tenantId || parsed.tenantId,
-              branchId: session.branchId || parsed.branchId,
-              userId: session.userId || parsed.userId
+              ...stored,
+              tenantId: session.tenantId || stored.tenantId,
+              branchId: session.branchId || stored.branchId,
+              userId: session.userId || stored.userId
             };
             return this.cachedIdentity!;
           }
         }
-      } catch (err) {
-        console.warn("[DeviceManager] Error reading stored device identity:", err);
+      } catch {}
+    }
+
+    try {
+      const stored = configurationService.getSync<DeviceMetadata>(DEVICE_STORAGE_KEY);
+      if (stored && stored.deviceId) {
+        this.cachedIdentity = {
+          ...stored,
+          tenantId: session.tenantId || stored.tenantId,
+          branchId: session.branchId || stored.branchId,
+          userId: session.userId || stored.userId
+        };
+        return this.cachedIdentity!;
       }
+    } catch (err) {
+      console.warn("[DeviceManager] Error reading stored device identity:", err);
     }
 
     // Generate fresh persistent device ID
-    const newDeviceId = `DEV-${crypto.randomUUID().substring(0, 12).toUpperCase()}`;
+    const randomUuid = (typeof crypto !== "undefined" && crypto.randomUUID) 
+      ? crypto.randomUUID() 
+      : Math.random().toString(36).substring(2, 15);
+    const newDeviceId = `DEV-${randomUuid.substring(0, 12).toUpperCase()}`;
     const userAgent = typeof navigator !== "undefined" ? navigator.userAgent : "Desktop POS";
     const deviceName = userAgent.includes("Android") 
       ? "Android POS Terminal" 
@@ -50,25 +73,65 @@ export class DeviceManager {
 
     const identity: DeviceMetadata = {
       deviceId: newDeviceId,
+      installationId: `INST-${newDeviceId}`,
       deviceName,
       tenantId: session.tenantId || "default-tenant",
       branchId: session.branchId || "default-branch",
       userId: session.userId || "default-user",
       status: "ACTIVE",
+      syncHealth: "HEALTHY",
+      lastSyncedSequence: 0,
+      lastAcknowledgedSequence: 0,
+      versionVector: { [newDeviceId]: 0 },
       registeredAt: new Date().toISOString(),
       lastSeenAt: new Date().toISOString()
     };
 
-    if (typeof window !== "undefined" && window.localStorage) {
+    if (typeof localStorage !== "undefined") {
       try {
         localStorage.setItem(DEVICE_STORAGE_KEY, JSON.stringify(identity));
-      } catch (err) {
-        console.warn("[DeviceManager] Error persisting device identity:", err);
-      }
+      } catch {}
     }
 
     this.cachedIdentity = identity;
     return identity;
+  }
+
+  /**
+   * Updates local sequence cursors for this device
+   */
+  static updateSequence(syncedSequence?: number, ackSequence?: number): void {
+    const identity = this.getDeviceIdentity();
+    if (syncedSequence !== undefined) {
+      identity.lastSyncedSequence = Math.max(identity.lastSyncedSequence || 0, syncedSequence);
+    }
+    if (ackSequence !== undefined) {
+      identity.lastAcknowledgedSequence = Math.max(identity.lastAcknowledgedSequence || 0, ackSequence);
+    }
+    identity.lastSeenAt = new Date().toISOString();
+    this.cachedIdentity = identity;
+    if (typeof localStorage !== "undefined") {
+      try {
+        localStorage.setItem(DEVICE_STORAGE_KEY, JSON.stringify(identity));
+      } catch {}
+    }
+  }
+
+  /**
+   * Updates version vector for this device
+   */
+  static updateVersionVector(vector: Record<string, number>): void {
+    const identity = this.getDeviceIdentity();
+    identity.versionVector = {
+      ...(identity.versionVector || {}),
+      ...vector
+    };
+    this.cachedIdentity = identity;
+    if (typeof localStorage !== "undefined") {
+      try {
+        localStorage.setItem(DEVICE_STORAGE_KEY, JSON.stringify(identity));
+      } catch {}
+    }
   }
 
   /**
@@ -79,42 +142,28 @@ export class DeviceManager {
 
     const identity = this.getDeviceIdentity();
     const session = getCurrentUserSession();
-    const token = localStorage.getItem("pharmaflow_token") || "local-admin-token";
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-      const response = await fetch("/api/v1/sync/device/register", {
-        method: "POST",
+      const response = await unifiedTransport.post<any>("/api/v1/sync/device/register", {
+        deviceId: identity.deviceId,
+        deviceName: identity.deviceName,
+        branchId: session.branchId || "default-branch",
+        appVersion: "8.3.0",
+        schemaVersion: SYNC_PROTOCOL_VERSION
+      }, {
         headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`,
           "X-Tenant-ID": session.tenantId,
           "X-Branch-ID": session.branchId || "",
           "X-Device-ID": identity.deviceId
         },
-        body: JSON.stringify({
-          deviceId: identity.deviceId,
-          deviceName: identity.deviceName,
-          branchId: session.branchId || "default-branch",
-          appVersion: "8.3.0",
-          schemaVersion: SYNC_PROTOCOL_VERSION
-        }),
-        signal: controller.signal
+        timeoutMs: 10000
       });
 
-      clearTimeout(timeoutId);
-
-      if (response.ok) {
-        const result = await response.json();
-        if (result.success && result.data) {
-          identity.status = result.data.status || "ACTIVE";
-          if (typeof window !== "undefined" && window.localStorage) {
-            localStorage.setItem(DEVICE_STORAGE_KEY, JSON.stringify(identity));
-          }
-          return true;
-        }
+      const result = response.data;
+      if (result && result.success && result.data) {
+        identity.status = result.data.status || "ACTIVE";
+        configurationService.set(DEVICE_STORAGE_KEY, identity).catch(() => {});
+        return true;
       }
     } catch (err) {
       console.warn("[DeviceManager] Background device registration deferred:", err);

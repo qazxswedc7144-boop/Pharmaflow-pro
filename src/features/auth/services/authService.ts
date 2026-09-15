@@ -1,33 +1,30 @@
 
-import { can as canHelper } from '@/utils/permissions';
-import { Permission } from '@/types';
+import { TokenProvider } from '@/services/auth/tokenProvider';
+import { useAuthStore } from '@/store/authStore';
 
 /**
- * Auth Service for Local-Only Operation
- * Safe permission checking wired with the real RBAC policy
+ * Auth Service Facade
+ * Connects legacy callers to Central Token Provider and RBAC store
  */
 
 export const authService = {
   getCurrentUser: () => {
-    try {
-      const raw = localStorage.getItem('pharmaflow_user');
-      if (raw) {
-        const u = JSON.parse(raw);
-        return {
-          id: u.id,
-          User_Email: `${u.username}@local.host`,
-          Role: u.role, // e.g. ADMIN, ACCOUNTANT, CASHIER etc.
-          User_Name: u.username
-        };
-      }
-    } catch {
-      // Ignored
+    const session = TokenProvider.getCurrentSession();
+    if (session.user) {
+      return {
+        id: session.user.id || (session.user as any).user_id || '',
+        User_Email: session.user.email || session.user.User_Email || `${session.user.username || 'user'}@local.host`,
+        Role: session.user.role || session.user.Role || 'CASHIER',
+        User_Name: session.user.fullName || session.user.User_Name || session.user.username || 'User',
+        tenantId: session.tenantId || (session.user as any).tenantId || 'TEN-DEV-001',
+        branchId: session.branchId || (session.user as any).branchId || 'BR-MAIN'
+      };
     }
     return null;
   },
 
   isSignedIn: () => {
-    return !!localStorage.getItem('pharmaflow_token');
+    return TokenProvider.isAuthenticated();
   },
 
   assertPermission: (permission: string, operation: string) => {
@@ -36,15 +33,14 @@ export const authService = {
   },
 
   can: (permission: string) => {
-    const user = authService.getCurrentUser();
-    if (!user) return false;
-    return canHelper(user.Role, permission as Permission);
+    return useAuthStore.getState().hasPermission(permission);
   },
 
   logout: async () => {
-    localStorage.removeItem('pharmaflow_token');
-    localStorage.removeItem('pharmaflow_refresh_token');
-    localStorage.removeItem('pharmaflow_user');
-    window.location.reload();
+    await TokenProvider.logout();
+    if (typeof window !== 'undefined') {
+      window.location.reload();
+    }
   }
 };
+

@@ -18,6 +18,7 @@ import { useAppNotification } from '@/context/NotificationContext';
 import { DraftService } from '@/services/system/DraftService';
 import { reportCache } from '@features/reports/services/reportCacheService';
 import { ReportEngine } from '@/services/reports/reportEngine';
+import { configurationService } from '@/services/config/configurationService';
 
 const DRAFT_KEY = 'pharmaflow_sales_draft';
 
@@ -690,7 +691,7 @@ export const useSales = (onNavigate?: (view: string, params?: Record<string, unk
         addToast("Invoice Saved Successfully\nReturning to Dashboard...", "success");
         
         await auditLogService.logSale(res.refId || editingInvoiceId || header.invoice_number, `Sale created: ${header.invoice_number}`, { items, total: vTotalSum });
-        localStorage.removeItem(DRAFT_KEY); 
+        configurationService.delete(DRAFT_KEY).catch(() => {}); 
         
         // Capture data for success modal 2.0 (Task 4) and dispose of draft (Task 5)
         const partner = customers.find(c => c.id === header.customer_id);

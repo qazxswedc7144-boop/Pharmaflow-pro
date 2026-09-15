@@ -1,4 +1,5 @@
 import { db } from '@/core/db';
+import { configurationService } from '@/services/config/configurationService';
 import { authService } from '@features/auth/services/authService';
 import { SystemBackup, AuditLogEntry } from '@/types';
 import { EncryptionService, hexToUint8Array, uint8ArrayToHex } from '@/services/security/EncryptionService';
@@ -166,12 +167,9 @@ export const BackupService = {
   },
 
   getDeviceId(): string {
-    let deviceId = localStorage.getItem('erp_device_id');
-    if (!deviceId) {
-      deviceId = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-      localStorage.setItem('erp_device_id', deviceId);
-    }
-    return deviceId;
+    const deviceId = configurationService.getSync<string>('device.uuid');
+    if (deviceId) return deviceId;
+    return 'DEV-BACKUP-01';
   },
 
   /**

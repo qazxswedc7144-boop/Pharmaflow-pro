@@ -6,9 +6,10 @@ import {
 } from 'lucide-react';
 import { OrganizationStats, SubscriptionInfo } from '../types';
 import { useAuthStore } from '../../../store/authStore';
+import { unifiedTransport } from '@/shared/network/transport/unifiedTransport';
 
 export const OrganizationDashboard: React.FC<{ onNavigateTab: (tab: string) => void }> = ({ onNavigateTab }) => {
-  const { tenantId, subscriptionPlan } = useAuthStore();
+  const { subscriptionPlan } = useAuthStore();
   const [stats, setStats] = useState<OrganizationStats>({
     totalUsers: 4,
     totalBranches: 2,
@@ -28,18 +29,10 @@ export const OrganizationDashboard: React.FC<{ onNavigateTab: (tab: string) => v
   const fetchDashboard = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch('/api/organization/dashboard', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-          'x-tenant-id': tenantId || 'default-tenant'
-        }
-      });
-      if (res.ok) {
-        const json = await res.json();
-        if (json.data) {
-          if (json.data.stats) setStats(json.data.stats);
-          if (json.data.subscription) setSubscription(json.data.subscription);
-        }
+      const json: any = await unifiedTransport.get('/api/organization/dashboard');
+      if (json && json.data) {
+        if (json.data.stats) setStats(json.data.stats);
+        if (json.data.subscription) setSubscription(json.data.subscription);
       }
     } catch (e) {
       console.warn('[Dashboard] Fallback data used:', e);

@@ -14,6 +14,7 @@ import { BatchSessionService } from './batchSessionService';
 import { InvoiceItem, Product, Supplier } from '@/types';
 import { normalizeToISODate } from '@/utils/expiryUtils';
 import { auditLogService } from '@/services/audit/auditLog';
+import { AliasLearningService, AliasLearningSummary } from '../aliasLearning';
 
 export class BatchResolutionService {
   /**
@@ -244,6 +245,12 @@ export class BatchResolutionService {
         if (barcodeToUse) {
           (invoiceItem as any).barcode = barcodeToUse;
         }
+        if (prod.batchNumber) {
+          (invoiceItem as any).batchNumber = prod.batchNumber;
+        }
+        if (prod.supplierProductCode) {
+          (invoiceItem as any).productCode = prod.supplierProductCode;
+        }
         if (prod.bonusQty) {
           (invoiceItem as any).bonusQty = prod.bonusQty;
         }
@@ -263,8 +270,10 @@ export class BatchResolutionService {
           createdAliases.forEach(a => {
             updatedAliases[a.sourceName] = a.targetName;
           });
-          if (db.setSetting) {
-            await db.setSetting('smart_import_aliases', updatedAliases);
+          if (typeof db.saveSetting === 'function') {
+            await db.saveSetting('smart_import_aliases', updatedAliases);
+          } else if (typeof (db as any).setSetting === 'function') {
+            await (db as any).setSetting('smart_import_aliases', updatedAliases);
           }
         } catch (err) {
           console.warn('[BatchResolutionService] Could not save smart_import_aliases setting:', err);
@@ -296,8 +305,22 @@ export class BatchResolutionService {
       await executeUnit();
     }
 
+    // Step D: Structured Multi-Tenant Alias & Catalog Learning Engine (Phase 2.3)
+    let aliasSummary: AliasLearningSummary | undefined = undefined;
+    try {
+      aliasSummary = await AliasLearningService.learnFromBatchSession(session, {
+        ...context,
+        masterData: {
+          products: [...existingProducts, ...createdProducts],
+          suppliers: createdSupplier ? [...existingSuppliers, createdSupplier] : existingSuppliers
+        }
+      });
+    } catch (aliasErr) {
+      console.warn('[BatchResolutionService] Non-blocking alias learning exception:', aliasErr);
+    }
+
     const executionTimeMs = Date.now() - startTime;
-    const appliedInvoiceNumber: string = session.summary.detectedInvoiceNumber || `INV-IMP-${Date.now()}`;
+    const appliedInvoiceNumber: string = session.summary.detectedInvoiceNumber || '';
     const appliedDate: string = session.summary.detectedDate || new Date().toISOString().slice(0, 10);
 
     const resolutionResult: CanonicalResolutionResult = {
@@ -316,7 +339,8 @@ export class BatchResolutionService {
       appliedInvoiceNumber,
       appliedDate,
       executionTimeMs,
-      idempotentReplay: false
+      idempotentReplay: false,
+      aliasLearningSummary: aliasSummary
     };
 
     // Record in Idempotency Service

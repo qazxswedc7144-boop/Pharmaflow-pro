@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
 import path from 'path';
 import fs from 'fs/promises';
+import crypto from 'crypto';
 import { EncryptionService } from '../security/encryption.service';
 import { prisma } from '../database/prisma';
 import { authenticateToken, requireRoles, AuthenticatedRequest } from '../middleware/auth.middleware';
@@ -449,19 +450,21 @@ router.post('/backup/upload', authenticateToken, requireRoles([Role.PLATFORM_OWN
     const safeTenantId = path.basename(String(tenantId).trim());
     const safeFilename = path.basename(String(filename).trim());
 
-    if (!safeFilename.endsWith('.json') && !safeFilename.endsWith('.bak')) {
+    const allowedExtensions = ['.json', '.bak', '.pfb', '.zip'];
+    const hasValidExt = allowedExtensions.some(ext => safeFilename.endsWith(ext));
+    if (!hasValidExt) {
       return res.status(400).json({
         status: 'error',
         code: 'INVALID_FILE_EXTENSION',
-        message: 'Only .json and .bak file extensions are allowed for backup upload.'
+        message: 'Only .pfb, .zip, .json, and .bak file extensions are allowed for backup upload.'
       });
     }
 
-    if (typeof payload === 'string' && payload.length > 10 * 1024 * 1024) {
+    if (typeof payload === 'string' && payload.length > 50 * 1024 * 1024) {
       return res.status(400).json({
         status: 'error',
         code: 'FILE_SIZE_LIMIT_EXCEEDED',
-        message: 'Backup payload exceeds maximum limit of 10MB.'
+        message: 'Backup payload exceeds maximum limit of 50MB.'
       });
     }
 
@@ -477,6 +480,17 @@ router.post('/backup/upload', authenticateToken, requireRoles([Role.PLATFORM_OWN
       });
     }
 
+    // Optional Checksum Verification on Upload
+    const clientChecksum = (req.headers['x-backup-checksum'] as string) || req.body?.checksum;
+    const computedChecksum = crypto.createHash('sha256').update(payload).digest('hex');
+    if (clientChecksum && clientChecksum.toLowerCase() !== computedChecksum.toLowerCase()) {
+      return res.status(400).json({
+        status: 'error',
+        code: 'CHECKSUM_MISMATCH',
+        message: 'Provided SHA-256 checksum does not match payload digest.'
+      });
+    }
+
     await fs.mkdir(folderPath, { recursive: true });
     await fs.writeFile(filePath, payload, 'utf8');
 
@@ -488,7 +502,7 @@ router.post('/backup/upload', authenticateToken, requireRoles([Role.PLATFORM_OWN
         entity: 'Backup',
         entityId: safeFilename,
         before: null,
-        after: JSON.stringify({ tenantId: safeTenantId, filename: safeFilename, sizeInBytes: payload.length }),
+        after: JSON.stringify({ tenantId: safeTenantId, filename: safeFilename, sizeInBytes: payload.length, checksum: computedChecksum }),
         ipAddress: req.ip
       }
     }).catch(() => {});
@@ -496,6 +510,7 @@ router.post('/backup/upload', authenticateToken, requireRoles([Role.PLATFORM_OWN
     return res.json({
       status: 'success',
       filename: safeFilename,
+      checksum: computedChecksum,
       message: 'Backup uploaded successfully to production cloud storage (Simulated GCS).'
     });
   } catch (error: any) {
@@ -543,7 +558,7 @@ router.get('/backup/list', authenticateToken, requireRoles([Role.PLATFORM_OWNER,
       const listBackups: any[] = [];
 
       for (const file of files) {
-        if (file.endsWith('.bak') || file.endsWith('.json')) {
+        if (file.endsWith('.bak') || file.endsWith('.json') || file.endsWith('.pfb') || file.endsWith('.zip')) {
           const stats = await fs.stat(path.join(folderPath, file));
           listBackups.push({
             filename: file,
@@ -631,6 +646,68 @@ router.get('/backup/download', authenticateToken, requireRoles([Role.PLATFORM_OW
       status: 'error',
       code: 'BACKUP_FILE_NOT_FOUND',
       message: 'The requested cloud backup file was not found or is corrupted.'
+    });
+  }
+});
+
+router.get('/backup/verify', authenticateToken, requireRoles([Role.PLATFORM_OWNER, Role.TENANT_ADMIN, Role.ADMIN]), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const tenantId = (req.query.tenantId as string) || req.user?.tenantId;
+    const filename = req.query.filename as string;
+    const expectedChecksum = (req.query.checksum as string) || '';
+
+    if (!tenantId || !filename) {
+      return res.status(400).json({
+        status: 'error',
+        code: 'BACKUP_VERIFY_BAD_INPUT',
+        message: 'tenantId and filename are required query parameters.'
+      });
+    }
+
+    if (req.user?.tenantId && req.user.tenantId !== tenantId && req.user.role !== Role.PLATFORM_OWNER) {
+      return res.status(403).json({
+        status: 'error',
+        code: 'TENANT_MISMATCH',
+        message: 'Unauthorized access to target tenant backup vault.'
+      });
+    }
+
+    const safeTenantId = path.basename(String(tenantId).trim());
+    const safeFilename = path.basename(String(filename).trim());
+    const baseDir = path.resolve(process.cwd(), 'backups_cloud_simulated');
+    const filePath = path.resolve(baseDir, safeTenantId, safeFilename);
+
+    if (!filePath.startsWith(baseDir)) {
+      return res.status(403).json({
+        status: 'error',
+        code: 'PATH_TRAVERSAL_BLOCKED',
+        message: 'Directory traversal detected.'
+      });
+    }
+
+    const stats = await fs.stat(filePath);
+    const content = await fs.readFile(filePath, 'utf8');
+    const computedChecksum = crypto.createHash('sha256').update(content).digest('hex');
+
+    const checksumMatched = expectedChecksum 
+      ? expectedChecksum.toLowerCase() === computedChecksum.toLowerCase() 
+      : undefined;
+
+    return res.json({
+      status: 'success',
+      valid: checksumMatched !== false,
+      filename: safeFilename,
+      sizeInBytes: stats.size,
+      sizeInKB: Math.round(stats.size / 1024),
+      checksum: computedChecksum,
+      checksumMatched,
+      verifiedAt: new Date().toISOString()
+    });
+  } catch (error: any) {
+    return res.status(404).json({
+      status: 'error',
+      code: 'BACKUP_NOT_FOUND',
+      message: 'Cloud backup file could not be verified or was not found.'
     });
   }
 });

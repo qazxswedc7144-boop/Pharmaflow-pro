@@ -9,7 +9,7 @@ export type ImportSourceType =
   | 'TSV'
   | 'TXT'
   | 'DOCX'
-  | 'PDF'
+  | 'PDF' 
   | 'PDF_TEXT' 
   | 'PDF_SCANNED' 
   | 'IMAGE' 
@@ -22,6 +22,14 @@ export type ExtractionMethod =
   | 'PDF_TEXT' 
   | 'OCR' 
   | 'AI_DOCUMENT';
+
+export type ExtractedItemSource = 
+  | 'OCR' 
+  | 'AI' 
+  | 'LOCAL_PARSER' 
+  | 'DATABASE_MATCH' 
+  | 'USER' 
+  | 'FALLBACK';
 
 export interface CanonicalImportRawRow {
   sourceRowIndex: number;
@@ -177,9 +185,12 @@ export interface ExtractedImportRow {
   // Intelligence & Matching
   matchedProductId?: string;
   matchedProductName?: string;
-  matchType?: 'EXACT' | 'NORMALIZED' | 'BARCODE' | 'CODE' | 'ALIAS' | 'FUZZY' | 'NONE';
+  matchType?: 'EXACT' | 'NORMALIZED' | 'BARCODE' | 'CODE' | 'ALIAS' | 'FUZZY' | 'MANUAL_REVIEW' | 'NONE';
   matchScore?: number;
   isNewProductCandidate?: boolean;
+  needsReview?: boolean;
+  reviewReason?: string;
+  candidateAlternatives?: Array<{ productId: string; productName: string; score: number }>;
   
   // Validation
   status: RowValidationStatus;
@@ -187,6 +198,12 @@ export interface ExtractedImportRow {
   isDuplicate?: boolean;
   duplicateReason?: string;
   isSkipped?: boolean;
+
+  // Phase 2.5 & 2.6: Field-Level Confidence & Self-Healing
+  fieldConfidence?: Record<string, { score: number; level: string; reasons: string[] }>;
+  isHealed?: boolean;
+  healingExplanations?: string[];
+  sourceProvenance?: ExtractedItemSource;
 }
 
 export interface ImportSummary {
@@ -200,6 +217,14 @@ export interface ImportSummary {
   detectedSupplier?: string;
   detectedInvoiceNumber?: string;
   detectedDate?: string;
+
+  // Phase 2.5 & 2.6 Summaries
+  confidenceScore?: number;
+  confidenceLevel?: 'HIGH' | 'MEDIUM' | 'LOW' | 'BLOCKED';
+  healedRowsCount?: number;
+  providerName?: string;
+  isFallbackActive?: boolean;
+  isWorkerUsed?: boolean;
 }
 
 export interface ImportAnalysisResult {
@@ -217,6 +242,29 @@ export interface ImportAnalysisResult {
     userId: string;
     analyzedAt: string;
     processingTimeMs: number;
+    providerType?: string;
+    providerName?: string;
+    isCached?: boolean;
+    isFallbackUsed?: boolean;
+    fallbackReason?: string;
+    parserVersion?: string;
+    isWorkerUsed?: boolean;
+    performanceMetrics?: {
+      parseTimeMs: number;
+      matchingTimeMs: number;
+      confidenceTimeMs: number;
+      aiTimeMs: number;
+      totalTimeMs: number;
+      totalRows: number;
+      cacheHit: boolean;
+      workerUsed: boolean;
+    };
+  };
+  confidenceReport?: any;
+  healingSummary?: {
+    healedRowCount: number;
+    healedFieldCount: number;
+    details: string[];
   };
 }
 

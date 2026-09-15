@@ -2,49 +2,97 @@
 
 import { prisma } from "../../database/prisma";
 import { Branch, Product, InventoryMovement } from "@prisma/client";
+import { ConsolidationLogger } from "./consolidation.logger";
 
 export class ConsolidationRepository {
   /**
-   * Fetches all active billing/operational branches
+   * Enforces Zero Data Leak Policy by validating tenantId on every operation
    */
-  static async getBranches(): Promise<Branch[]> {
-    try {
-      const branches = await prisma.branch.findMany({
-        where: { isActive: true },
-        orderBy: { code: "asc" }
-      });
-      if (branches && branches.length > 0) return branches;
-    } catch {
-      // fallback
+  public static assertValidTenantId(tenantId: string): string {
+    if (!tenantId || typeof tenantId !== "string" || !tenantId.trim()) {
+      throw new Error("[ConsolidationRepository] Zero Data Leak Policy Violation: A valid non-empty tenantId is strictly required for this operation.");
     }
-    return [
-      { id: "MAIN-01", code: "BR-01", name: "الفرع الرئيسي (صنعاء)", address: "شارع الزبيري", phone: "+9671234567", isActive: true, tenantId: "tenant-01", createdAt: new Date(), updatedAt: new Date() } as any,
-      { id: "BR-02", code: "BR-02", name: "فرع حدة", address: "شارع حدة", phone: "+9671234568", isActive: true, tenantId: "tenant-01", createdAt: new Date(), updatedAt: new Date() } as any,
-      { id: "BR-03", code: "BR-03", name: "فرع تعز", address: "شارع جمال", phone: "+9671234569", isActive: true, tenantId: "tenant-01", createdAt: new Date(), updatedAt: new Date() } as any
-    ];
+    return tenantId.trim();
   }
 
   /**
-   * Retrieves paginated journal entries with lines and account types for financial calculations
+   * Fetches active billing/operational branches scoped strictly by tenantId.
+   * Never falls back to fake or hardcoded branches from other tenants.
    */
-  static async getJournalEntries(page = 1, limit = 5000): Promise<{ entries: any[]; total: number }> {
-    const skip = (page - 1) * limit;
+  static async getBranches(tenantId: string): Promise<Branch[]> {
+    const validTenantId = this.assertValidTenantId(tenantId);
+    return prisma.branch.findMany({
+      where: {
+        tenantId: validTenantId,
+        isActive: true
+      },
+      orderBy: { code: "asc" }
+    });
+  }
+
+  /**
+   * Retrieves paginated journal entries with lines and accounts, strictly scoped by tenantId.
+   */
+  static async getJournalEntries(
+    tenantId: string,
+    page = 1,
+    limit = 1000,
+    options?: { startDate?: Date; endDate?: Date; branchId?: string }
+  ): Promise<{ entries: any[]; total: number }> {
+    const validTenantId = this.assertValidTenantId(tenantId);
+    const boundedLimit = Math.min(Math.max(1, limit), 1000);
+    const skip = (page - 1) * boundedLimit;
+
+    const whereClause: any = {
+      tenantId: validTenantId,
+      status: "POSTED",
+      ...(options?.branchId ? { branchId: options.branchId } : {}),
+      ...(options?.startDate || options?.endDate
+        ? {
+            date: {
+              ...(options.startDate ? { gte: options.startDate } : {}),
+              ...(options.endDate ? { lte: options.endDate } : {})
+            }
+          }
+        : {})
+    };
+
     const [total, entries] = await Promise.all([
-      prisma.journalEntry.count({
-        where: { status: "POSTED" }
-      }),
+      prisma.journalEntry.count({ where: whereClause }),
       prisma.journalEntry.findMany({
-        where: { status: "POSTED" },
-        include: {
+        where: whereClause,
+        select: {
+          id: true,
+          date: true,
+          referenceId: true,
+          sourceType: true,
+          status: true,
+          branchId: true,
+          tenantId: true,
+          debitTotal: true,
+          creditTotal: true,
+          description: true,
           lines: {
-            include: {
-              account: true,
+            select: {
+              id: true,
+              accountId: true,
+              debit: true,
+              credit: true,
+              description: true,
+              account: {
+                select: {
+                  id: true,
+                  code: true,
+                  name: true,
+                  type: true
+                }
+              }
             }
           }
         },
         orderBy: { date: "desc" },
         skip,
-        take: limit
+        take: boundedLimit
       })
     ]);
 
@@ -52,79 +100,234 @@ export class ConsolidationRepository {
   }
 
   /**
-   * Reads all journal lines directly as flat records for specific aggregation categories
+   * Reads posted journal lines scoped strictly by tenantId with targeted select and bounded limit.
    */
-  static async getAllPostedJournalLines() {
+  static async getAllPostedJournalLines(
+    tenantId: string,
+    options?: { startDate?: Date; endDate?: Date; branchId?: string; limit?: number }
+  ) {
+    const validTenantId = this.assertValidTenantId(tenantId);
+    const boundedLimit = options?.limit ? Math.min(Math.max(1, options.limit), 50000) : 50000;
+
     return prisma.journalLine.findMany({
       where: {
         entry: {
-          status: "POSTED"
+          tenantId: validTenantId,
+          status: "POSTED",
+          ...(options?.branchId ? { branchId: options.branchId } : {}),
+          ...(options?.startDate || options?.endDate
+            ? {
+                date: {
+                  ...(options.startDate ? { gte: options.startDate } : {}),
+                  ...(options.endDate ? { lte: options.endDate } : {})
+                }
+              }
+            : {})
         }
       },
-      include: {
-        entry: true,
-        account: true
-      }
+      select: {
+        id: true,
+        debit: true,
+        credit: true,
+        description: true,
+        account: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            type: true
+          }
+        },
+        entry: {
+          select: {
+            id: true,
+            branchId: true,
+            date: true,
+            referenceId: true
+          }
+        }
+      },
+      take: boundedLimit
     });
   }
 
   /**
-   * Fetches finished inter-branch stock transfers for eliminations
+   * Fetches finished inter-branch stock transfers for eliminations, strictly scoped by tenantId.
    */
-  static async getCompletedBranchTransfers(): Promise<any[]> {
+  static async getCompletedBranchTransfers(tenantId: string): Promise<any[]> {
+    const validTenantId = this.assertValidTenantId(tenantId);
     return prisma.branchTransfer.findMany({
       where: {
+        tenantId: validTenantId,
         status: {
           in: ["RECEIVED", "IN_TRANSIT", "APPROVED"]
         }
       },
-      include: {
-        items: true,
-        sourceBranch: true,
-        targetBranch: true
-      }
+      select: {
+        id: true,
+        transferNumber: true,
+        sourceBranchId: true,
+        targetBranchId: true,
+        status: true,
+        reason: true,
+        createdAt: true,
+        sourceBranch: {
+          select: { id: true, code: true, name: true }
+        },
+        targetBranch: {
+          select: { id: true, code: true, name: true }
+        },
+        items: {
+          select: {
+            id: true,
+            productId: true,
+            qty: true,
+            receivedQty: true,
+            batchNumber: true,
+            expiryDate: true
+          }
+        }
+      },
+      orderBy: { createdAt: "desc" },
+      take: 1000
     });
   }
 
   /**
-   * Fetches all invoices representing sales/purchases between branches or external vendors
+   * Fetches confirmed invoices scoped strictly by tenantId with bounded take and targeted select.
+   * Prevents loading 10,000 unbounded invoices into Node.js heap.
    */
-  static async getInvoices(page = 1, limit = 10000): Promise<any[]> {
-    const skip = (page - 1) * limit;
+  static async getInvoices(
+    tenantId: string,
+    page = 1,
+    limit = 500,
+    options?: { startDate?: Date; endDate?: Date; branchId?: string; type?: "SALE" | "PURCHASE" | "RETURN_SALE" | "RETURN_PURCHASE" }
+  ): Promise<any[]> {
+    const validTenantId = this.assertValidTenantId(tenantId);
+    const boundedLimit = Math.min(Math.max(1, limit), 1000);
+    const skip = (page - 1) * boundedLimit;
+
     return prisma.invoice.findMany({
       where: {
-        status: "CONFIRMED"
+        tenantId: validTenantId,
+        status: "CONFIRMED",
+        ...(options?.type ? { type: options.type } : {}),
+        ...(options?.branchId ? { branchId: options.branchId } : {}),
+        ...(options?.startDate || options?.endDate
+          ? {
+              date: {
+                ...(options.startDate ? { gte: options.startDate } : {}),
+                ...(options.endDate ? { lte: options.endDate } : {})
+              }
+            }
+          : {})
       },
-      include: {
+      select: {
+        id: true,
+        invoiceNumber: true,
+        date: true,
+        type: true,
+        partnerId: true,
+        partnerType: true,
+        totalAmount: true,
+        status: true,
+        paymentStatus: true,
+        branchId: true,
+        tenantId: true,
         items: {
-          include: {
-            product: true
+          select: {
+            id: true,
+            productId: true,
+            qty: true,
+            price: true,
+            cost: true,
+            total: true,
+            product: {
+              select: {
+                id: true,
+                name: true,
+                cost: true,
+                price: true
+              }
+            }
           }
         }
       },
       orderBy: { date: "desc" },
       skip,
-      take: limit
+      take: boundedLimit
     });
   }
 
   /**
-   * Returns complete inventory quantities per branch and product
+   * Database-side aggregation for invoices by type and branch
    */
-  static async getBranchInventoryLevels(): Promise<any[]> {
-    return prisma.branchInventory.findMany({
-      include: {
-        branch: true
+  static async getInvoiceAggregates(
+    tenantId: string,
+    options?: { startDate?: Date; endDate?: Date; branchId?: string }
+  ) {
+    const validTenantId = this.assertValidTenantId(tenantId);
+    return prisma.invoice.groupBy({
+      by: ["type", "branchId"],
+      where: {
+        tenantId: validTenantId,
+        status: "CONFIRMED",
+        ...(options?.branchId ? { branchId: options.branchId } : {}),
+        ...(options?.startDate || options?.endDate
+          ? {
+              date: {
+                ...(options.startDate ? { gte: options.startDate } : {}),
+                ...(options.endDate ? { lte: options.endDate } : {})
+              }
+            }
+          : {})
+      },
+      _sum: {
+        totalAmount: true
+      },
+      _count: {
+        id: true
       }
     });
   }
 
   /**
-   * Returns list of all products for catalog pricing
+   * Returns complete inventory quantities per branch and product scoped strictly by tenantId.
    */
-  static async getProductCatalog(): Promise<Product[]> {
+  static async getBranchInventoryLevels(tenantId: string): Promise<any[]> {
+    const validTenantId = this.assertValidTenantId(tenantId);
+    return prisma.branchInventory.findMany({
+      where: {
+        branch: {
+          tenantId: validTenantId
+        }
+      },
+      select: {
+        id: true,
+        branchId: true,
+        productId: true,
+        stockQuantity: true,
+        reorderPoint: true,
+        reorderQuantity: true,
+        branch: {
+          select: {
+            id: true,
+            code: true,
+            name: true
+          }
+        }
+      }
+    });
+  }
+
+  /**
+   * Returns list of products with catalog pricing and real costs, scoped strictly by tenantId.
+   */
+  static async getProductCatalog(tenantId: string): Promise<Product[]> {
+    const validTenantId = this.assertValidTenantId(tenantId);
     return prisma.product.findMany({
       where: {
+        tenantId: validTenantId,
         isActive: true,
         deletedAt: null
       }
@@ -132,47 +335,110 @@ export class ConsolidationRepository {
   }
 
   /**
-   * Returns inventory movements in last 90 days for velocity analysis (slow/fast indicators)
+   * Returns inventory batches with true FIFO cost and remaining quantities, scoped strictly by tenantId.
    */
-  static async getHistoricalMovements(since: Date): Promise<InventoryMovement[]> {
+  static async getInventoryBatches(tenantId: string): Promise<any[]> {
+    const validTenantId = this.assertValidTenantId(tenantId);
+    return prisma.inventoryBatch.findMany({
+      where: {
+        tenantId: validTenantId,
+        stockQuantity: { gt: 0 }
+      },
+      select: {
+        id: true,
+        productId: true,
+        batchNumber: true,
+        initialQty: true,
+        stockQuantity: true,
+        cost: true,
+        expiryDate: true
+      },
+      orderBy: { createdAt: "asc" }
+    });
+  }
+
+  /**
+   * Returns inventory movements in recent period for velocity analysis, scoped strictly by tenantId.
+   */
+  static async getHistoricalMovements(tenantId: string, since: Date, limit = 2000): Promise<InventoryMovement[]> {
+    const validTenantId = this.assertValidTenantId(tenantId);
+    const boundedLimit = Math.min(Math.max(1, limit), 5000);
     return prisma.inventoryMovement.findMany({
       where: {
+        tenantId: validTenantId,
         createdAt: {
           gte: since
         }
       },
       orderBy: {
         createdAt: "desc"
-      }
+      },
+      take: boundedLimit
     });
   }
 
   /**
-   * Fetches sales items since a specified calendar threshold
+   * Fetches confirmed sales items with actual cost, price and quantity, scoped strictly by tenantId.
    */
-  static async getSalesItems(since: Date): Promise<any[]> {
+  static async getSalesItems(tenantId: string, since: Date, limit = 2000): Promise<any[]> {
+    const validTenantId = this.assertValidTenantId(tenantId);
+    const boundedLimit = Math.min(Math.max(1, limit), 5000);
     return prisma.invoiceItem.findMany({
       where: {
         invoice: {
+          tenantId: validTenantId,
           type: "SALE",
           status: "CONFIRMED",
           date: { gte: since }
         }
       },
-      include: {
-        invoice: true,
-        product: true
-      }
+      select: {
+        id: true,
+        invoiceId: true,
+        productId: true,
+        qty: true,
+        price: true,
+        cost: true,
+        total: true,
+        createdAt: true,
+        invoice: {
+          select: {
+            id: true,
+            date: true,
+            branchId: true,
+            totalAmount: true
+          }
+        },
+        product: {
+          select: {
+            id: true,
+            name: true,
+            cost: true,
+            price: true
+          }
+        }
+      },
+      orderBy: { createdAt: "desc" },
+      take: boundedLimit
     });
   }
 
   /**
-   * Creates event records for audit traceability
+   * Creates event records for audit traceability with mandatory tenantId.
    */
-  static async writeAuditLog(userId: string | null, action: string, entityId: string, payload: any, ipAddress?: string) {
+  static async writeAuditLog(
+    tenantId: string,
+    userId: string | null,
+    action: string,
+    entityId: string,
+    payload: any,
+    ipAddress?: string
+  ) {
+    const validTenantId = this.assertValidTenantId(tenantId);
     try {
       return await prisma.auditLog.create({
         data: {
+          tenantId: validTenantId,
           userId,
           action,
           entity: "FinancialConsolidation",
@@ -180,19 +446,32 @@ export class ConsolidationRepository {
           before: null,
           after: JSON.stringify(payload),
           ipAddress: ipAddress || "SYSTEM",
+          requestId: payload?.requestId || null,
           branchId: "CONSOLIDATED"
         }
       });
     } catch (err) {
-      console.warn("[ConsolidationRepo] Failed writing audit log, continuing:", err);
+      ConsolidationLogger.warn("[ConsolidationRepo] Failed writing audit log, continuing", {
+        tenantId: validTenantId,
+        component: "ConsolidationRepository",
+        context: { error: err instanceof Error ? err.message : String(err) }
+      });
       return null;
     }
   }
 
   /**
-   * Creates sync events inside the global event-sourced pipeline
+   * Creates sync events inside the global event-sourced pipeline with tenantId.
    */
-  static async publishSyncEvent(eventId: string, eventType: string, entityId: string, payload: any, userId: string | null) {
+  static async publishSyncEvent(
+    tenantId: string,
+    eventId: string,
+    eventType: string,
+    entityId: string,
+    payload: any,
+    userId: string | null
+  ) {
+    const validTenantId = this.assertValidTenantId(tenantId);
     try {
       return await prisma.syncEvent.create({
         data: {
@@ -202,14 +481,19 @@ export class ConsolidationRepository {
           eventType,
           entityType: "CONSOLIDATION",
           entityId,
-          payload: payload,
+          payload: { ...payload, tenantId: validTenantId },
           branchId: "CONSOLIDATED",
           vectorClock: { value: 1 }
         }
       });
     } catch (err) {
-      console.warn("[ConsolidationRepo] Failed publishing sync event, continuing:", err);
+      ConsolidationLogger.warn("[ConsolidationRepo] Failed publishing sync event, continuing", {
+        tenantId: validTenantId,
+        component: "ConsolidationRepository",
+        context: { error: err instanceof Error ? err.message : String(err) }
+      });
       return null;
     }
   }
 }
+

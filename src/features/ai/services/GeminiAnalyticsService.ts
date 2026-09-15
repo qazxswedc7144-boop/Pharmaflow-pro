@@ -1,5 +1,6 @@
 import { ReportEngine } from '@/services/reports/reportEngine';
 import { ai } from './gemini';
+import { configurationService } from '@/services/config/configurationService';
 
 export class GeminiAnalyticsService {
   private static CACHE_PREFIX = 'pharmaflow_gemini_cache_';
@@ -28,10 +29,8 @@ export class GeminiAnalyticsService {
       const cacheKey = await this.generateHash(prompt + dataStr);
       
       // 1. Check Cache
-      const cachedRaw = localStorage.getItem(this.CACHE_PREFIX + cacheKey);
-      let cachedData: any = null;
-      if (cachedRaw) {
-        cachedData = JSON.parse(cachedRaw);
+      const cachedData: any = configurationService.getSync(this.CACHE_PREFIX + cacheKey);
+      if (cachedData) {
         // If valid, return directly
         if (Date.now() - cachedData.timestamp < this.CACHE_TTL) {
           return cachedData.result;
@@ -67,10 +66,10 @@ export class GeminiAnalyticsService {
       }
       
       // 4. Save to Cache
-      localStorage.setItem(this.CACHE_PREFIX + cacheKey, JSON.stringify({
+      configurationService.set(this.CACHE_PREFIX + cacheKey, {
         result,
         timestamp: Date.now()
-      }));
+      }).catch(() => {});
 
       return result;
     } catch (error: any) {

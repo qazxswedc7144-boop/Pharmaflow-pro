@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, Suspense, useCallback, useTransition } from 'react';
+import React, { useState, useEffect, useRef, Suspense, useCallback, useTransition } from 'react';
 import { User, UserRole } from '@/types/auth.types';
 import { lazyWithRetry } from '@/utils/lazyWithRetry';
 import Dashboard from '@features/dashboard/pages/Dashboard';
@@ -36,6 +36,13 @@ import {
   SubscriptionBlockadeBackdrop,
   TrialBlockedModal
 } from '@features/saas/components/SubscriptionWidgets';
+import { SubscriptionStatusProvider } from '@/services/saas/subscriptionStatusProvider';
+import { TokenProvider } from '@/services/auth/tokenProvider';
+import { configurationService } from '@/services/config/configurationService';
+import { 
+  SubscriptionEntitlementService,
+  shouldShowSubscriptionOnboarding 
+} from '@/services/saas/subscriptionEntitlementService';
 import { CopilotWidget } from '@features/ai/copilot';
 
 // Error Boundary Component
@@ -136,7 +143,6 @@ const TermsOfService = lazyWithRetry(() => import('@features/legal/pages/TermsOf
 const SecurityAuditDashboard = lazyWithRetry(() => import('@features/settings/components/SecurityAuditDashboard'));
 const BackupManagement = lazyWithRetry(() => import('@features/settings/components/BackupManagement'));
 
-import { useAuthStore } from '@/store/authStore';
 import { useAuth } from '@features/auth/hooks/useAuth';
 import LoginPage from '@features/auth/pages/LoginPage';
 import ProtectedRoute from '@/components/shared/ProtectedRoute';
@@ -176,6 +182,7 @@ function MainLayout() {
   }, []);
   const [viewParams, setViewParams] = useState<any>(null); 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const mainContentRef = useRef<HTMLElement>(null);
   const [, startTransition] = useTransition();
   const { setHeaderAction, refreshGlobal, setSettingsOpen } = useUI();
   const { setEditingInvoiceId } = useSalesStore();
@@ -185,41 +192,99 @@ function MainLayout() {
   const [isLocked, setIsLocked] = useState(false);
   const [isReady, setIsReady] = useState(false);
 
-  // SaaS Onboarding Lifecycle hooks
+  // Reset scroll on view change
+  useEffect(() => {
+    if (mainContentRef.current) {
+      mainContentRef.current.scrollTop = 0;
+    }
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+  }, [currentView]);
+
+  // SaaS Onboarding Lifecycle hooks — Evaluated strictly via authoritative subscription status
   const [onboardingOpen, setOnboardingOpen] = useState(false);
 
   useEffect(() => {
-    const onboarded = localStorage.getItem('pharmaflow_onboarded');
-    if (!onboarded) {
-      setOnboardingOpen(true);
-    }
+    let isMounted = true;
+
+    const evaluateOnboardingStatus = async () => {
+      try {
+        const ent = await SubscriptionEntitlementService.getAuthoritativeEntitlement();
+        if (!isMounted) return;
+
+        const shouldShow = shouldShowSubscriptionOnboarding(ent);
+        const hasDismissedInSession = SubscriptionEntitlementService.hasDismissedInCurrentSession();
+
+        if (shouldShow && !hasDismissedInSession) {
+          setOnboardingOpen(true);
+        } else {
+          setOnboardingOpen(false);
+        }
+      } catch (e) {
+        console.warn('[App] Error evaluating onboarding status:', e);
+        if (!SubscriptionEntitlementService.hasDismissedInCurrentSession()) {
+          setOnboardingOpen(true);
+        }
+      }
+    };
+
+    evaluateOnboardingStatus();
+
+    const handleSubscriptionUpdate = () => {
+      evaluateOnboardingStatus();
+    };
+
+    window.addEventListener('saas-usage-updated', handleSubscriptionUpdate);
+    window.addEventListener('storage', handleSubscriptionUpdate);
+
+    return () => {
+      isMounted = false;
+      window.removeEventListener('saas-usage-updated', handleSubscriptionUpdate);
+      window.removeEventListener('storage', handleSubscriptionUpdate);
+    };
   }, []);
 
-  const handleCloseOnboarding = () => {
-    localStorage.setItem('pharmaflow_onboarded', 'true');
+  const handleCloseOnboarding = useCallback(() => {
+    // Dismiss for the active in-memory session only; does NOT permanently prevent showing on next app boot
+    SubscriptionEntitlementService.markDismissedForCurrentSession();
     setOnboardingOpen(false);
-  };
+  }, []);
 
   const handleUpgradeTrial = () => {
-    handleNav('saas-portal');
+    handleNav('settings', { tab: 'subscription' });
   };
 
   // Task 4: Optimized and re-engineered ultra-fast main startup boot sequence
   useEffect(() => {
     const startBootTime = performance.now();
+    let isComponentMounted = true;
+
+    // Safety Gate: Ensure ready state becomes true after 1200ms max under all network/storage conditions
+    const safetyTimer = setTimeout(() => {
+      if (isComponentMounted) {
+        console.warn("⚡ [BOOT_SEQUENCE] Safety timer triggered (1200ms). Forcing system readiness.");
+        setIsReady(true);
+      }
+    }, 1200);
+
     const bootFlow = async () => {
       try {
-        // Ensure local IndexedDB is initialized
+        // Ensure local IndexedDB is initialized with 800ms max timeout
         if (!db.isOpen()) {
-          await db.open();
+          await Promise.race([
+            db.open(),
+            new Promise((res) => setTimeout(res, 800))
+          ]);
         }
         
-        // 1. Immediately query the Dexie systemSettings table to resolve the status of authenticationEnabled
-        const item = await db.systemSettings.get('authenticationEnabled');
-        const authEnabled = item !== undefined ? item.value === true : false;
+        // 1. Query configurationService to resolve the status of authenticationEnabled with timeout
+        const item = await Promise.race([
+          configurationService.get<boolean>('authenticationEnabled').catch(() => null),
+          new Promise<null>((res) => setTimeout(() => res(null), 500))
+        ]);
+        const authEnabled = item === true || (typeof item === 'object' && (item as any)?.value === true);
         
-        // Align localStorage flag so that other components can pull it synchronously
-        localStorage.setItem('pharmaflow_auth_enabled', authEnabled ? 'true' : 'false');
+        // Align auth enabled flag in configurationService so components can pull it synchronously
+        configurationService.set('pharmaflow_auth_enabled', authEnabled ? 'true' : 'false').catch(() => {});
         
         if (!authEnabled) {
           // 2. IF FALSE: Bypass all network checks, initialize local administrator mocks, and resolve <MainApplication />
@@ -232,30 +297,26 @@ function MainLayout() {
             tenant_id: "local-tenant-01",
             Is_Active: true
           };
-          localStorage.setItem('pharmaflow_user', JSON.stringify(BYPASS_USER));
-          localStorage.setItem('pharmaflow_token', 'local-admin-token');
-          localStorage.setItem('pharmaflow_refresh_token', 'local-admin-refresh-token');
           
-          useAuthStore.getState().login(BYPASS_USER, 'local-admin-token');
+          TokenProvider.setSession(BYPASS_USER, 'local-admin-token', 'local-admin-refresh-token');
           
           const currentHash = window.location.hash;
           if (currentHash === '#/login' || !currentHash) {
             window.location.hash = '#/dashboard';
           }
         } else {
-          // 3. IF TRUE: Evaluate the validity of the current JWT session storage / secure HTTP headers
-          const token = localStorage.getItem('pharmaflow_token');
-          const storedUserStr = localStorage.getItem('pharmaflow_user');
+          // 3. IF TRUE: Evaluate the validity of the current JWT session storage / TokenProvider state
+          const token = TokenProvider.getAccessToken();
+          const session = TokenProvider.getCurrentSession();
           
           let isTokenValid = false;
-          if (token && storedUserStr && token !== 'local-admin-token') {
+          if (token && session.user && token !== 'local-admin-token') {
             try {
               const parts = token.split('.');
               if (parts.length === 3) {
                 const tokenPart = parts[1];
                 if (tokenPart) {
                   const payload = JSON.parse(atob(tokenPart));
-                  // Evaluate validity and check if current JWT token is before expiration
                   const exp = payload.exp * 1000;
                   if (Date.now() < exp) {
                     isTokenValid = true;
@@ -273,27 +334,45 @@ function MainLayout() {
             if (currentHash === '#/login' || !currentHash) {
               window.location.hash = '#/dashboard';
             }
+          } else if (session.refreshToken && typeof navigator !== 'undefined' && navigator.onLine) {
+            // Attempt single-flight session restoration via refresh token with 800ms timeout
+            try {
+              await Promise.race([
+                TokenProvider.refreshAccessToken(),
+                new Promise((_, rej) => setTimeout(() => rej(new Error("Refresh timeout")), 800))
+              ]);
+              const currentHash = window.location.hash;
+              if (currentHash === '#/login' || !currentHash) {
+                window.location.hash = '#/dashboard';
+              }
+            } catch {
+              TokenProvider.clearSession();
+              window.location.hash = '#/login';
+            }
           } else {
             // Invalid or expired: push to LoginScreen
-            localStorage.removeItem('pharmaflow_token');
-            localStorage.removeItem('pharmaflow_refresh_token');
-            localStorage.removeItem('pharmaflow_user');
-            useAuthStore.getState().logout();
-            
+            TokenProvider.clearSession();
             window.location.hash = '#/login';
           }
         }
       } catch (err) {
         console.error("⚡ [BOOT_SEQUENCE] Snappy verification pipeline failed, falling back safely:", err);
       } finally {
+        clearTimeout(safetyTimer);
         const bootDuration = performance.now() - startBootTime;
-        console.log(`⚡ [BOOT_SEQUENCE] Snappy startup boot completed in ${bootDuration.toFixed(1)}ms (KPI limit: 300ms).`);
-        // 4. PERFORMANCE KPI: Ensure ready state becomes true instantly
-        setIsReady(true);
+        console.log(`⚡ [BOOT_SEQUENCE] Snappy startup boot completed in ${bootDuration.toFixed(1)}ms.`);
+        if (isComponentMounted) {
+          setIsReady(true);
+        }
       }
     };
     
     bootFlow();
+
+    return () => {
+      isComponentMounted = false;
+      clearTimeout(safetyTimer);
+    };
   }, []);
 
 
@@ -320,9 +399,9 @@ function MainLayout() {
     useEffect(() => {
       const checkLock = async () => {
         try {
-          // Check autoLockEnabled from Dexie systemSettings
-          const alItem = await db.systemSettings.get('autoLockEnabled');
-          const isAutoLockEnabled = alItem !== undefined ? alItem.value === true : false;
+          // Check autoLockEnabled from configurationService
+          const alItem = await configurationService.get<boolean>('autoLockEnabled').catch(() => null);
+          const isAutoLockEnabled = alItem === true || (typeof alItem === 'object' && (alItem as any)?.value === true);
 
           if (isAutoLockEnabled) {
             const settings = await appLockService.getSettings();
@@ -349,8 +428,8 @@ function MainLayout() {
               if (settings.lock_mode === 'instant') {
                 setIsLocked(true);
               } else {
-                const alItem = await db.systemSettings.get('autoLockEnabled');
-                const isAutoLockEnabled = alItem !== undefined ? alItem.value === true : false;
+                const alItem = await configurationService.get<boolean>('autoLockEnabled').catch(() => null);
+                const isAutoLockEnabled = alItem === true || (typeof alItem === 'object' && (alItem as any)?.value === true);
                 if (isAutoLockEnabled) {
                   const shouldLock = await appLockService.shouldLock();
                   if (shouldLock) setIsLocked(true);
@@ -384,9 +463,9 @@ function MainLayout() {
       // Initial check on mount (App Resume)
       const initialCheck = async () => {
         try {
-          // Check lockOnStartup from Dexie systemSettings
-          const losItem = await db.systemSettings.get('lockOnStartup');
-          const isLockOnStartupEnabled = losItem !== undefined ? losItem.value === true : false;
+          // Check lockOnStartup from configurationService
+          const losItem = await configurationService.get<boolean>('lockOnStartup').catch(() => null);
+          const isLockOnStartupEnabled = losItem === true || (typeof losItem === 'object' && (losItem as any)?.value === true);
 
           if (isLockOnStartupEnabled) {
             setIsLocked(true);
@@ -403,8 +482,8 @@ function MainLayout() {
 
           const settings = await appLockService.getSettings();
           if (settings?.is_enabled) {
-            const alItem = await db.systemSettings.get('autoLockEnabled');
-            const isAutoLockEnabled = alItem !== undefined ? alItem.value === true : false;
+            const alItem = await configurationService.get<boolean>('autoLockEnabled').catch(() => null);
+            const isAutoLockEnabled = alItem === true || (typeof alItem === 'object' && (alItem as any)?.value === true);
             if (isAutoLockEnabled) {
               const shouldLock = await appLockService.shouldLock();
               if (shouldLock) setIsLocked(true);
@@ -529,7 +608,7 @@ function MainLayout() {
 
     const init = async () => { 
       // Clear DB to resolve IDBKeyRange error if requested (one-time fix)
-      if (!localStorage.getItem('pharmaflow_db_reset_v4')) {
+      if (!configurationService.getSync('pharmaflow_db_reset_v4')) {
         try {
           console.log("🧹 Clearing IndexedDB to resolve IDBKeyRange error...");
           const databases = await window.indexedDB.databases();
@@ -542,13 +621,13 @@ function MainLayout() {
         } catch (e) {
           window.indexedDB.deleteDatabase("pharmaflow");
         }
-        localStorage.setItem('pharmaflow_db_reset_v4', 'true');
+        configurationService.set('pharmaflow_db_reset_v4', 'true').catch(() => {});
       }
 
       try {
         await db.open();
         // Dynamic Sync engine activation
-        syncEngine = new DistributedSyncEngine(db);
+        syncEngine = DistributedSyncEngine.getInstance(db);
         syncEngine.start();
       } catch (e) {
         console.error("Failed to open DB:", e);
@@ -641,7 +720,7 @@ function MainLayout() {
     return () => clearInterval(interval);
   }, [bgSyncInterval]);
 
-  const handleNav = useCallback((view: string, params: any = null) => {
+  const handleNav = useCallback((view: string, params: any = null, options?: { replace?: boolean }) => {
     if ((view === 'sales' || view === 'purchases') && !params?.id) {
        setEditingInvoiceId(null);
     }
@@ -649,7 +728,14 @@ function MainLayout() {
       setCurrentView(view); 
       setViewParams(params);
       const url = params?.id ? `#/${view}/${params.id}` : `#/${view}`;
-      window.location.hash = url;
+      if (options?.replace) {
+        window.history.replaceState(null, '', url);
+      } else {
+        window.location.hash = url;
+      }
+      if (mainContentRef.current) {
+        mainContentRef.current.scrollTop = 0;
+      }
     });
     setIsSidebarOpen(false);
     setHeaderAction(null);
@@ -913,10 +999,12 @@ function MainLayout() {
           showBackButton={currentView !== 'dashboard'} 
           onBackClick={() => {
             const view = currentView as any;
-            if (view.startsWith?.('reports/') || view === 'aging-report') {
-              handleNav('reports');
+            if (viewParams?.from) {
+              handleNav(viewParams.from, null, { replace: true });
+            } else if (view.startsWith?.('reports/') || view === 'aging-report') {
+              handleNav('reports', null, { replace: true });
             } else {
-              handleNav('dashboard');
+              handleNav('dashboard', null, { replace: true });
             }
           }} 
           onMenuClick={() => setIsSidebarOpen(true)}
@@ -924,7 +1012,7 @@ function MainLayout() {
           currentView={currentView}
         />
 
-        <main className={`flex-1 min-h-0 relative ${
+        <main ref={mainContentRef} className={`flex-1 min-h-0 relative ${
           ['sales', 'purchases'].includes(currentView)
             ? 'h-full overflow-hidden p-0 w-full max-w-[540px] md:max-w-xl mx-auto flex flex-col bg-white'
             : 'overflow-y-auto overflow-x-hidden bg-[#F8FAFA] custom-scrollbar w-full max-w-7xl mx-auto px-3 sm:px-6 py-3 sm:py-6'
@@ -939,17 +1027,17 @@ function MainLayout() {
                 switch (currentView) {
                   case 'sales': return <ProtectedRoute permission="POS_ACCESS"><SalesModule onNavigate={handleNav} /></ProtectedRoute>;
                   case 'purchases': return <ProtectedRoute permission="PURCHASE_ACCESS"><PurchasesView onNavigate={handleNav} /></ProtectedRoute>;
-                  case 'settings': return <RoleGuard permission="MANAGE_SYSTEM"><SettingsModule onNavigate={handleNav} /></RoleGuard>;
+                  case 'settings': return <RoleGuard permission="MANAGE_SYSTEM"><SettingsModule onNavigate={handleNav} initialTab={viewParams?.tab} /></RoleGuard>;
                   case 'supplier-payment': return <RoleGuard permission="CREATE_VOUCHER"><SupplierPaymentModule onNavigate={handleNav} /></RoleGuard>;
                   case 'customer-receipt': return <RoleGuard permission="CREATE_VOUCHER"><CustomerReceiptModule onNavigate={handleNav} /></RoleGuard>;
                   case 'vouchers': return <RoleGuard permission="CREATE_VOUCHER"><VouchersModule onNavigate={handleNav} initialType={viewParams?.type} /></RoleGuard>;
                   case 'inventory': return <InventoryModule onNavigate={handleNav} />;
-                  case 'inventory-audit': return <InventoryAuditModule lang="ar" onNavigate={handleNav} />;
+                  case 'inventory-audit': return <InventoryAuditModule lang="ar" onNavigate={handleNav} from={viewParams?.from} />;
                   case 'accounting': return <ProtectedRoute permission="FINANCIAL_ACCESS"><AccountingModule onNavigate={handleNav} /></ProtectedRoute>;
-                  case 'audit-history': return <RoleGuard permission="MANAGE_SYSTEM"><AuditHistoryModule onNavigate={handleNav} recordId={viewParams?.id} tableName={viewParams?.tableName} initialFilter={viewParams?.filter} /></RoleGuard>;
+                  case 'audit-history': return <RoleGuard permission="MANAGE_SYSTEM"><AuditHistoryModule onNavigate={handleNav} recordId={viewParams?.id} tableName={viewParams?.tableName} initialFilter={viewParams?.filter} from={viewParams?.from} /></RoleGuard>;
                   case 'reconciliation': return <RoleGuard permission="FINANCIAL_ACCESS"><ReconciliationModule onNavigate={handleNav} /></RoleGuard>;
                   case 'system-health': return <ProtectedRoute permission="MANAGE_SYSTEM"><SystemHealthModule onNavigate={handleNav} /></ProtectedRoute>;
-                  case 'invoices-archive': return <InvoicesArchiveModule onNavigate={handleNav} initialFilter={viewParams?.filter} />;
+                  case 'invoices-archive': return <InvoicesArchiveModule onNavigate={handleNav} initialFilter={viewParams?.filter} initialSearch={viewParams?.id || viewParams?.search} />;
                   case 'invoice-history': return <RoleGuard permission="MANAGE_SYSTEM"><InvoiceHistoryModule onNavigate={handleNav} /></RoleGuard>;
                   case 'adjustments-registry': return <RoleGuard permission="FINANCIAL_ACCESS"><AdjustmentsArchiveModule onNavigate={handleNav} /></RoleGuard>;
                   case 'aging-report': return <RoleGuard permission="VIEW_REPORTS"><AgingReportModule onNavigate={handleNav} /></RoleGuard>;
@@ -964,7 +1052,7 @@ function MainLayout() {
                   case 'branch-transfers': return <RoleGuard permission="BRANCH_TRANSFER"><BranchTransfers onNavigate={handleNav} initialTab={viewParams?.tab} initialStatus={viewParams?.status} /></RoleGuard>;
                   case 'branch-reports': return <RoleGuard permission="BRANCH_REPORT"><BranchReports onNavigate={handleNav} /></RoleGuard>;
                   case 'consolidation': return <RoleGuard permission="FINANCIAL_ACCESS"><ConsolidationDashboard onNavigate={handleNav} /></RoleGuard>;
-                  case 'security-audit': return <RoleGuard permission="MANAGE_SYSTEM"><SecurityAuditDashboard onNavigate={handleNav} initialTab={viewParams?.tab} /></RoleGuard>;
+                  case 'security-audit': return <RoleGuard permission="MANAGE_SYSTEM"><SecurityAuditDashboard onNavigate={handleNav} initialTab={viewParams?.tab} from={viewParams?.from} /></RoleGuard>;
                   
                   case 'reports/remaining-stock': return <RoleGuard permission="VIEW_REPORTS"><RemainingStockReport onNavigate={handleNav} /></RoleGuard>;
                   case 'reports/item-profits': return <RoleGuard permission="VIEW_REPORTS"><ItemProfitsReport onNavigate={handleNav} /></RoleGuard>;
@@ -1004,8 +1092,8 @@ function MainLayout() {
           </div>
         </main>
 
-        {/* Smart Pharmacy Copilot Floating Launcher - Dashboard Only */}
-        {currentView === 'dashboard' && <CopilotWidget />}
+        {/* Smart Pharmacy Copilot Floating Launcher - Dashboard Only (Suppressed while Onboarding Modal is open) */}
+        {currentView === 'dashboard' && !onboardingOpen && <CopilotWidget />}
       </div>
     </div>
     </MotionConfig>
@@ -1015,9 +1103,11 @@ function MainLayout() {
 export default function App() {
   return (
     <ErrorBoundary>
-      <Suspense fallback={<div className="min-h-screen bg-[#F8FAFA] flex items-center justify-center font-black text-[#1E4D4D] animate-pulse">جاري تحميل النظام السيادي...</div>}>
-        <MainLayout />
-      </Suspense>
+      <SubscriptionStatusProvider>
+        <Suspense fallback={<div className="min-h-screen bg-[#F8FAFA] flex items-center justify-center font-black text-[#1E4D4D] animate-pulse">جاري تحميل النظام السيادي...</div>}>
+          <MainLayout />
+        </Suspense>
+      </SubscriptionStatusProvider>
     </ErrorBoundary>
   );
 }

@@ -29,7 +29,7 @@ export class AliasMatchingEngine {
     const supplierCodes = rows.map(r => r.productCode || '').filter(Boolean);
 
     const [supplierAliases, productAliasData] = await Promise.all([
-      SupplierAliasRepository.findAliasesBatch(tenantId, rawNames),
+      SupplierAliasRepository.findAliasesBatch(tenantId, []),
       ProductAliasRepository.preloadBatch(tenantId, supplierId, rawNames, supplierCodes)
     ]);
 
@@ -188,21 +188,23 @@ export class AliasMatchingEngine {
     }
 
     // -------------------------------------------------------------
-    // Tier 6: Normalized Name Match
+    // Tier 6: Exact / Normalized Name Match
     // -------------------------------------------------------------
     if (normInput) {
       const normMatch = products.find(p => {
-        const pNorm = AliasNormalization.normalize(p.name || p.Name || '');
-        return pNorm === normInput;
+        const pRaw = (p.name || p.Name || '').trim();
+        const pNorm = AliasNormalization.normalize(pRaw);
+        return pNorm === normInput || pRaw.toLowerCase() === rawName.toLowerCase();
       });
       if (normMatch && !isProductRejected(normMatch.id)) {
         const safety = validateSafety(normMatch);
         if (safety.isSafe) {
+          const isExact = (normMatch.name || normMatch.Name || '').trim().toLowerCase() === rawName.toLowerCase();
           return {
             productId: normMatch.id,
             productName: normMatch.name || normMatch.Name || '',
-            matchType: 'NORMALIZED',
-            confidence: 0.95,
+            matchType: isExact ? 'EXACT' : 'NORMALIZED',
+            confidence: isExact ? 1.0 : 0.95,
             isSupplierSpecific: false,
             safetyCheck: safety
           };
@@ -216,6 +218,8 @@ export class AliasMatchingEngine {
     let bestFuzzy: Product | null = null;
     let bestScore = 0;
     let bestSafety: DosageFormSafetyResult = { isSafe: true };
+    let secondFuzzy: Product | null = null;
+    let secondScore = 0;
 
     for (const p of products) {
       if (isProductRejected(p.id)) continue;
@@ -225,24 +229,49 @@ export class AliasMatchingEngine {
 
       if (score > bestScore) {
         const safety = validateSafety(p);
-        // Only accept candidate if dosage is safe or if score is high without critical collision
+        // Only accept candidate if dosage is safe
         if (safety.isSafe) {
+          secondScore = bestScore;
+          secondFuzzy = bestFuzzy;
           bestScore = score;
           bestFuzzy = p;
           bestSafety = safety;
         }
+      } else if (score > secondScore) {
+        const safety = validateSafety(p);
+        if (safety.isSafe) {
+          secondScore = score;
+          secondFuzzy = p;
+        }
       }
     }
 
-    if (bestFuzzy && bestScore >= 0.70) {
-      return {
-        productId: bestFuzzy.id,
-        productName: bestFuzzy.name || bestFuzzy.Name || '',
-        matchType: 'FUZZY',
-        confidence: Math.round(bestScore * 100) / 100,
-        isSupplierSpecific: false,
-        safetyCheck: bestSafety
-      };
+    // Check for ambiguous close candidates
+    const isClose = secondFuzzy !== null && secondScore >= 0.70 && (bestScore - secondScore) < 0.07;
+
+    if (bestFuzzy && bestScore >= 0.76) {
+      if (isClose) {
+        return {
+          productId: bestFuzzy.id,
+          productName: bestFuzzy.name || bestFuzzy.Name || '',
+          matchType: 'MANUAL_REVIEW',
+          confidence: Math.round(bestScore * 100) / 100,
+          isSupplierSpecific: false,
+          safetyCheck: {
+            isSafe: false,
+            reason: `مرشحان متقاربان يتطلبان مراجعة يدوية: (${bestFuzzy.name || bestFuzzy.Name}) و (${secondFuzzy!.name || secondFuzzy!.Name})`
+          }
+        };
+      } else if (bestScore >= 0.78) {
+        return {
+          productId: bestFuzzy.id,
+          productName: bestFuzzy.name || bestFuzzy.Name || '',
+          matchType: 'FUZZY',
+          confidence: Math.round(bestScore * 100) / 100,
+          isSupplierSpecific: false,
+          safetyCheck: bestSafety
+        };
+      }
     }
 
     return null;

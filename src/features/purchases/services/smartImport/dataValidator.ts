@@ -118,13 +118,20 @@ export class DataValidator {
       }
     }
 
+    const wasSupplierTotalMissing = supplierTotal === undefined || isNaN(supplierTotal);
+    const finalTotal = !wasSupplierTotalMissing ? supplierTotal : expectedTotal;
+    const addedExplanations: string[] = [];
+    if (wasSupplierTotalMissing && qty > 0 && price > 0) {
+      addedExplanations.push(`تم استنتاج الإجمالي رياضياً (${finalTotal})`);
+    }
+
     return {
       rowNumber,
       rawCells: row.rawCells || {},
       productName: name,
       quantity: qty > 0 ? qty : 1,
       unitPrice: price >= 0 ? price : 0,
-      total: supplierTotal !== undefined ? supplierTotal : expectedTotal,
+      total: finalTotal,
       expectedTotal,
       barcode: row.barcode,
       productCode: row.productCode,
@@ -138,7 +145,12 @@ export class DataValidator {
       status,
       validationIssues: issues,
       isDuplicate,
-      duplicateReason
+      duplicateReason,
+      isHealed: row.isHealed || wasSupplierTotalMissing,
+      healingExplanations: [
+        ...(row.healingExplanations || []),
+        ...addedExplanations
+      ]
     };
   }
 

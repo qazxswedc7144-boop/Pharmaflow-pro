@@ -1,27 +1,39 @@
 // src/features/purchases/services/smartImport/productMatchingEngine.ts
+/**
+ * PharmaFlow PRO ERP — Sovereign Enterprise Edition
+ * Phase 2.6: High-Performance Product Matching Engine with Indexed Lookup & Fuzzy Memoization
+ * Enhanced with Strict Pharmaceutical Normalization, Dosage Safety, and Close Candidate Detection
+ */
+
 import { db } from '@/core/db';
 import { Product } from '@/types';
 import { ExtractedImportRow } from './types';
-import { ColumnIntelligence } from './columnIntelligence';
+import { ProductMatchingIndex } from './performance/matchingIndex';
+import { AliasNormalization } from './aliasLearning/aliasNormalization';
 
 export interface ProductMatchCandidate {
   product: Product;
-  matchType: 'EXACT' | 'NORMALIZED' | 'BARCODE' | 'CODE' | 'ALIAS' | 'FUZZY';
+  matchType: 'EXACT' | 'NORMALIZED' | 'BARCODE' | 'CODE' | 'ALIAS' | 'FUZZY' | 'MANUAL_REVIEW';
   score: number;
+  needsReview?: boolean;
+  reviewReason?: string;
+  candidateAlternatives?: Array<{ product: Product; score: number }>;
 }
 
 export class ProductMatchingEngine {
   /**
-   * Computes string similarity between 0.0 and 1.0
+   * Computes string similarity between 0.0 and 1.0 (Dice Coefficient with canonical & normalized forms)
    */
   static calculateSimilarity(str1: string, str2: string): number {
     if (!str1 || !str2) return 0;
-    const a = ColumnIntelligence.normalizeHeader(str1);
-    const b = ColumnIntelligence.normalizeHeader(str2);
-    if (a === b) return 1.0;
 
-    // Bigram / Dice Coefficient
-    if (a.length < 2 || b.length < 2) return 0;
+    const norm1 = AliasNormalization.normalize(str1);
+    const norm2 = AliasNormalization.normalize(str2);
+    if (norm1 === norm2) return 1.0;
+
+    const canon1 = AliasNormalization.canonicalize(str1);
+    const canon2 = AliasNormalization.canonicalize(str2);
+    if (canon1 === canon2) return 1.0;
 
     const getBigrams = (str: string) => {
       const bigrams = new Set<string>();
@@ -31,15 +43,27 @@ export class ProductMatchingEngine {
       return bigrams;
     };
 
-    const bigramsA = getBigrams(a);
-    const bigramsB = getBigrams(b);
-    let intersection = 0;
-
-    bigramsA.forEach(bg => {
-      if (bigramsB.has(bg)) intersection++;
+    const bigramsNorm1 = getBigrams(norm1);
+    const bigramsNorm2 = getBigrams(norm2);
+    let intersectNorm = 0;
+    bigramsNorm1.forEach(bg => {
+      if (bigramsNorm2.has(bg)) intersectNorm++;
     });
+    const scoreNorm = (bigramsNorm1.size + bigramsNorm2.size) > 0 
+      ? (2.0 * intersectNorm) / (bigramsNorm1.size + bigramsNorm2.size) 
+      : 0;
 
-    return (2.0 * intersection) / (bigramsA.size + bigramsB.size);
+    const bigramsCanon1 = getBigrams(canon1);
+    const bigramsCanon2 = getBigrams(canon2);
+    let intersectCanon = 0;
+    bigramsCanon1.forEach(bg => {
+      if (bigramsCanon2.has(bg)) intersectCanon++;
+    });
+    const scoreCanon = (bigramsCanon1.size + bigramsCanon2.size) > 0 
+      ? (2.0 * intersectCanon) / (bigramsCanon1.size + bigramsCanon2.size) 
+      : 0;
+
+    return Math.max(scoreNorm, scoreCanon);
   }
 
   /**
@@ -61,111 +85,50 @@ export class ProductMatchingEngine {
   }
 
   /**
-   * Matches a single row against the scoped products pool using 6-tier hierarchy
+   * Matches a single row against the scoped products pool using strict 5-tier hierarchy
+   * Barcode/Code > Exact normalized name > Alias > Strong fuzzy match > Manual review
    */
   static matchItem(
     row: ExtractedImportRow,
     products: Product[],
     learnedAliases: Record<string, string> = {}
   ): ProductMatchCandidate | null {
-    const rawName = (row.productName || '').trim();
-    const barcode = (row.barcode || '').trim();
-    const code = (row.productCode || '').trim();
-
-    if (!rawName && !barcode && !code) return null;
-
-    // Tier 1: Exact Barcode match
-    if (barcode) {
-      const barcodeMatch = products.find(p => p.barcode && p.barcode.trim() === barcode);
-      if (barcodeMatch) {
-        return { product: barcodeMatch, matchType: 'BARCODE', score: 1.0 };
-      }
-    }
-
-    // Tier 2: Exact Product Code match
-    if (code) {
-      const codeMatch = products.find(p => (p.id && p.id.trim() === code) || ((p as any).code && (p as any).code.trim() === code));
-      if (codeMatch) {
-        return { product: codeMatch, matchType: 'CODE', score: 0.98 };
-      }
-    }
-
-    // Tier 3: Exact Name Match
-    const exactNameMatch = products.find(p => {
-      const pName = (p.name || p.Name || '').trim();
-      return pName.toLowerCase() === rawName.toLowerCase();
-    });
-    if (exactNameMatch) {
-      return { product: exactNameMatch, matchType: 'EXACT', score: 0.99 };
-    }
-
-    // Tier 4: Normalized Name Match
-    const normInput = ColumnIntelligence.normalizeHeader(rawName);
-    const normNameMatch = products.find(p => {
-      const pNorm = ColumnIntelligence.normalizeHeader(p.name || p.Name || '');
-      return pNorm === normInput;
-    });
-    if (normNameMatch) {
-      return { product: normNameMatch, matchType: 'NORMALIZED', score: 0.95 };
-    }
-
-    // Tier 5: Learned Alias Match
-    if (learnedAliases) {
-      const target = learnedAliases[rawName] || learnedAliases[normInput];
-      if (target) {
-        const targetNorm = ColumnIntelligence.normalizeHeader(target);
-        const aliasMatch = products.find(p => {
-          const pName = p.name || p.Name || '';
-          return (
-            pName.toLowerCase() === target.toLowerCase() ||
-            p.id === target ||
-            ColumnIntelligence.normalizeHeader(pName) === targetNorm
-          );
-        });
-        if (aliasMatch) {
-          return { product: aliasMatch, matchType: 'ALIAS', score: 0.92 };
-        }
-      }
-    }
-
-    // Tier 6: Fuzzy Similarity Match (Threshold > 0.70)
-    let bestFuzzy: Product | null = null;
-    let bestScore = 0;
-
-    for (const p of products) {
-      const pName = p.name || p.Name || '';
-      const score = this.calculateSimilarity(rawName, pName);
-      if (score > bestScore) {
-        bestScore = score;
-        bestFuzzy = p;
-      }
-    }
-
-    if (bestFuzzy && bestScore >= 0.70) {
-      return { product: bestFuzzy, matchType: 'FUZZY', score: Math.round(bestScore * 100) / 100 };
-    }
-
-    return null;
+    const index = new ProductMatchingIndex(products);
+    return index.matchRow(row, learnedAliases);
   }
 
   /**
-   * Processes an array of rows and enriches them with product matching information
+   * High-performance batch product matching with pre-indexed search and fuzzy memoization
    */
   static matchAllRows(
     rows: ExtractedImportRow[],
     products: Product[],
     learnedAliases: Record<string, string> = {}
   ): ExtractedImportRow[] {
+    const index = new ProductMatchingIndex(products);
+
     return rows.map(row => {
-      const candidate = this.matchItem(row, products, learnedAliases);
+      const candidate = index.matchRow(row, learnedAliases);
       if (candidate) {
+        const isReview = candidate.needsReview || candidate.matchType === 'MANUAL_REVIEW';
         return {
           ...row,
           matchedProductId: candidate.product.id,
-          matchedProductName: candidate.product.name || candidate.product.Name,
+          matchedProductName: candidate.product.name || candidate.product.Name || '',
           matchType: candidate.matchType,
           matchScore: candidate.score,
-          isNewProductCandidate: false
+          isNewProductCandidate: false,
+          needsReview: isReview ? true : row.needsReview,
+          reviewReason: isReview ? candidate.reviewReason : row.reviewReason,
+          candidateAlternatives: candidate.candidateAlternatives?.map(a => ({
+            productId: a.product.id,
+            productName: a.product.name || a.product.Name || '',
+            score: a.score
+          })),
+          status: isReview ? 'WARNING' : row.status,
+          validationIssues: isReview
+            ? [...row.validationIssues, candidate.reviewReason || 'صنف يتطلب مراجعة يدوية لتأكيد المطابقة']
+            : row.validationIssues
         };
       } else {
         return {
@@ -184,3 +147,4 @@ export class ProductMatchingEngine {
     });
   }
 }
+

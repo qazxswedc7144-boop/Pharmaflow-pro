@@ -11,6 +11,7 @@ import { CanonicalResolutionResult } from '../services/smartImport/batchProcessi
 export interface SmartImportModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onCancel?: () => void;
   analysisResult: ImportAnalysisResult | null;
   isLoading: boolean;
   progressStage?: string;
@@ -25,6 +26,7 @@ export interface SmartImportModalProps {
 export const SmartImportModal: React.FC<SmartImportModalProps> = ({
   isOpen,
   onClose,
+  onCancel,
   analysisResult,
   isLoading,
   progressStage,
@@ -39,6 +41,7 @@ export const SmartImportModal: React.FC<SmartImportModalProps> = ({
     <SmartImportProcessingCenter
       isOpen={isOpen}
       onClose={onClose}
+      onCancel={onCancel}
       analysisResult={analysisResult}
       isLoading={isLoading}
       progressStage={progressStage}

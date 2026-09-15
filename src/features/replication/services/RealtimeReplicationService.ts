@@ -5,6 +5,7 @@ import { BranchService } from "@features/branches/services/BranchService";
 import { rtdb } from "@/services/firebase";
 import { ref, onChildAdded, onValue, off, DatabaseReference } from "firebase/database";
 import { SyncEngine } from "@features/sync/SyncEngine";
+import { configurationService } from "@/services/config/configurationService";
 
 export type ClientReplicationEventHandler = (event: Record<string, unknown>) => void;
 
@@ -53,7 +54,7 @@ class RealtimeReplicationService {
       this.replicationRef = ref(rtdb, `replication_events/${branchId}`);
       this.connectedRef = ref(rtdb, ".info/connected");
       
-      const lastSeq = parseInt(localStorage.getItem("pharma_last_sequence") || "0", 10);
+      const lastSeq = parseInt(configurationService.getSync<string>("pharma_last_sequence") || "0", 10);
       
       // Listen to Firebase Connection State
       onValue(this.connectedRef, (snap) => {
@@ -115,9 +116,9 @@ class RealtimeReplicationService {
       console.log(`🎯 [REPLICATION_CLIENT] Replicating locally: ${event.type} (#Seq: ${event.sequence})`);
 
       const currentSeq = event.sequence || 0;
-      const lastSeq = parseInt(localStorage.getItem("pharma_last_sequence") || "0", 10);
+      const lastSeq = parseInt(configurationService.getSync<string>("pharma_last_sequence") || "0", 10);
       if (currentSeq > lastSeq) {
-        localStorage.setItem("pharma_last_sequence", currentSeq.toString());
+        configurationService.set("pharma_last_sequence", currentSeq.toString()).catch(() => {});
       }
 
       const { type, payload } = event;

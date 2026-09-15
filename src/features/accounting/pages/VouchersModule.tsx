@@ -1,6 +1,7 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { db } from '@/core/db';
+import { SupplierRepository } from '@/database/repositories/SupplierRepository';
 import { voucherService } from '@features/accounting/services/voucherService';
 import { useUI } from '@/contexts/AppContext';
 import { Receipt, Payment, Supplier } from '@/types';
@@ -92,8 +93,8 @@ const VouchersModule: React.FC<VouchersModuleProps> = ({ onNavigate, initialType
         if (window.confirm(`الاسم "${partnerSearch}" غير موجود. هل تريد إضافته كـ ${vType === 'RECEIPT' ? 'عميل جديد' : 'مورد جديد'}؟`)) {
           try {
             const newPartner: Supplier = {
-              id: `P-${Date.now()}`,
-              Supplier_ID: `SID-${Date.now()}`,
+              id: `${vType === 'RECEIPT' ? 'C' : 'S'}-${Date.now()}`,
+              Supplier_ID: `${vType === 'RECEIPT' ? 'C' : 'S'}-${Date.now()}`,
               Supplier_Name: partnerSearch.trim(),
               balance: 0,
               openingBalance: 0,
@@ -101,12 +102,7 @@ const VouchersModule: React.FC<VouchersModuleProps> = ({ onNavigate, initialType
               updated_at: new Date().toISOString(),
               version: 1
             };
-            if (vType === 'RECEIPT') {
-              await db.customers.add(newPartner);
-            } else {
-              await db.suppliers.add(newPartner);
-            }
-            finalPartnerId = newPartner.id;
+            finalPartnerId = await SupplierRepository.save(newPartner, vType === 'RECEIPT' ? 'C' : 'S');
             addToast("تم إضافة الاسم الجديد بنجاح", "success");
           } catch (e) {
             addToast("فشل إضافة الاسم الجديد", "error");
@@ -153,23 +149,15 @@ const VouchersModule: React.FC<VouchersModuleProps> = ({ onNavigate, initialType
   const handleDelete = async (item: (Receipt & { type?: string }) | (Payment & { type?: string })) => {
     if (window.confirm('هل أنت متأكد من حذف هذا السند؟')) {
       try {
-        if ('customer_id' in item) {
-          await db.db.receipts.delete(item.id);
-          await db.updateCustomerBalance(item.customer_id, item.amount); // Reverse: add back to receivable
-        } else {
-          await db.db.payments.delete(item.id);
-          await db.updateSupplierBalance(item.supplier_id, item.amount); // Reverse: add back to payable
-        }
-        
-        // Also delete journal entry
-        const entries = await db.journalEntries.where('reference_id').equals(item.id).toArray();
-        for (const entry of entries) {
-           // Reverse account balances
-           for (const line of entry.lines) {
-             await db.updateAccountBalance(line.accountId, line.credit - line.debit);
-           }
-           await db.journalEntries.delete(entry.id);
-        }
+        const isReceipt = 'customer_id' in item;
+        const partnerId = isReceipt ? item.customer_id : item.supplier_id;
+        await voucherService.cancelVoucher({
+          id: item.id,
+          type: isReceipt ? 'RECEIPT' : 'PAYMENT',
+          partnerId,
+          amount: item.amount,
+          reason: 'حذف من قبل المستخدم عبر واجهة السندات'
+        });
 
         addToast('تم الحذف بنجاح ✅', 'success');
         refreshGlobal();

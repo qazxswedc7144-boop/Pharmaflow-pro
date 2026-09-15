@@ -15,6 +15,7 @@ import { ImportAnalysisResult, ImportSourceType } from '../types';
 import { authService } from '@/features/auth/services/authService';
 import { Product, Supplier } from '@/types';
 import { auditLogService } from '@/services/audit/auditLog';
+import { AliasMatchingEngine, PreloadedAliasContext } from '../aliasLearning';
 
 export interface InitializeBatchSessionParams {
   analysis: ImportAnalysisResult;
@@ -73,6 +74,17 @@ export class BatchProcessingOrchestrator {
       learnedAliases = {};
     }
 
+    let preloadedAliasContext: PreloadedAliasContext | undefined = undefined;
+    try {
+      preloadedAliasContext = await AliasMatchingEngine.preloadBatchContext(
+        tenantId,
+        undefined,
+        params.analysis.rows || []
+      );
+    } catch (err) {
+      console.warn('[BatchProcessingOrchestrator] Could not preload alias context:', err);
+    }
+
     const session = BatchSessionService.createSession(params.analysis, {
       tenantId,
       branchId,
@@ -81,7 +93,8 @@ export class BatchProcessingOrchestrator {
       fileName: params.fileName,
       existingSuppliers,
       existingProducts,
-      learnedAliases
+      learnedAliases,
+      preloadedAliasContext
     });
 
     await auditLogService.log({

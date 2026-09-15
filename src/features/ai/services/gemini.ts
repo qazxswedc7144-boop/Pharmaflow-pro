@@ -1,35 +1,12 @@
-// src/modules/ai/services/gemini.ts
-import { useAuthStore } from "@/store/authStore";
+// src/features/ai/services/gemini.ts
+import { TokenProvider } from "@/services/auth/tokenProvider";
+import { unifiedTransport } from "@/shared/network/transport/unifiedTransport";
 
 /**
- * Retrieves the currently active JWT token of the authenticated user session.
- */
-function getToken(): string {
-  const storeToken = useAuthStore.getState().token;
-  if (storeToken) return storeToken;
-
-  // Safe fallback to persist storage
-  try {
-    const raw = localStorage.getItem("pharma-auth-storage");
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed?.state?.token) {
-        return parsed.state.token;
-      }
-    }
-  } catch (e) {}
-
-  return localStorage.getItem("pharmaflow_token") || 
-         localStorage.getItem("token") || 
-         "";
-}
-
-/**
- * Makes a secure request to the backend server-side Gemini AI proxy.
+ * Makes a secure request to the backend server-side Gemini AI proxy via UnifiedTransport.
  */
 async function callAiProxy(model: string, contents: any): Promise<{ text: string; candidates: any[] }> {
-  const token = getToken();
-  if (!token) {
+  if (!TokenProvider.getAccessToken()) {
     return {
       text: "التحليلات في وضع عدم الاتصال حالياً. يرجى تسجيل الدخول أولاً لتفعيل نظام التحليلات الذكي.",
       candidates: []
@@ -37,24 +14,14 @@ async function callAiProxy(model: string, contents: any): Promise<{ text: string
   }
 
   try {
-    const response = await fetch("/api/ai/generate-content", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${token}`
-      },
-      body: JSON.stringify({
-        model,
-        contents
-      })
+    const res = await unifiedTransport.post<{ text: string; candidates: any[] }>("/api/ai/generate-content", {
+      model,
+      contents
+    }, {
+      profile: "AI"
     });
 
-    if (!response.ok) {
-      const errorJson = await response.json().catch(() => ({}));
-      throw new Error(errorJson.message || `HTTP error ${response.status}`);
-    }
-
-    return await response.json();
+    return res || { text: "", candidates: [] };
   } catch (error: any) {
     console.warn("[GeminiEngine Client] Proxy call info:", error.message || error);
     return {

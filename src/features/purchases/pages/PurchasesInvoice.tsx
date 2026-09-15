@@ -184,6 +184,7 @@ const PurchasesInvoice: React.FC<{ onNavigate?: (view: string, params?: Record<s
     showAIConfirmModal,
     setShowAIConfirmModal,
     handleAIImport,
+    cancelSmartImport,
     resetInvoiceState,
     suppliers,
     saveSuccessData,
@@ -716,6 +717,7 @@ const PurchasesInvoice: React.FC<{ onNavigate?: (view: string, params?: Record<s
           resetInvoiceState();
           setIsProcessingAI(false);
         }}
+        onCancel={cancelSmartImport}
         analysisResult={smartAnalysisResult}
         isLoading={isProcessingAI}
         progressStage={importProgressStage}

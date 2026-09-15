@@ -6,7 +6,9 @@ import {
   BackupEntry, 
   RestoreResult, 
   BackupValidationResult, 
-  RestorePlan 
+  RestorePlan,
+  RestoreOptions,
+  DisasterRecoveryDrillResult
 } from '../backup.types';
 import { BackupStorageAdapter, UploadProgressCallback } from './storage/BackupStorageAdapter';
 import { firebaseStorageAdapter } from './storage/FirebaseStorageAdapter';
@@ -45,17 +47,27 @@ export class BackupService {
   /**
    * Creates a local encrypted backup package (.pfb) containing data.enc and metadata.json.
    */
-  async createLocalBackup(data: any, password: string, type: 'full' | 'fast' = 'full'): Promise<BackupEntry> {
+  async createLocalBackup(
+    data: any, 
+    password: string, 
+    type: 'full' | 'fast' = 'full',
+    options?: { tenantId?: string; branchId?: string; createdBy?: string }
+  ): Promise<BackupEntry> {
     if (!password || !password.trim()) {
       throw new Error("يرجى إدخال كلمة مرور النسخة الاحتياطية");
     }
-    const serializedData = JSON.stringify(data);
+    const sanitizedData = this.sanitizeDataBeforeBackup(data);
+    const serializedData = JSON.stringify(sanitizedData);
     const encryptedPayload = CryptoService.encrypt(serializedData, password);
     const encryptedPayloadString = JSON.stringify(encryptedPayload);
     const checksum = await this.calculateChecksum(encryptedPayloadString);
 
+    const tenantId = options?.tenantId || 'tenant_default';
+    const branchId = options?.branchId;
+    const createdBy = options?.createdBy || 'system';
+
     const metadata: BackupMetadata = {
-      id: crypto.randomUUID(),
+      id: crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2, 15),
       name: `PharmaFlow_Backup_${new Date().toISOString().replace(/:/g, '-')}.pfb`,
       date: new Date(),
       size: 0,
@@ -63,7 +75,11 @@ export class BackupService {
       status: 'local',
       encryption: true,
       checksum,
-      version: '1.0.0'
+      version: '2.0.0',
+      tenantId,
+      branchId,
+      createdBy,
+      formatVersion: '2.0.0'
     };
 
     const zip = new JSZip();
@@ -75,24 +91,69 @@ export class BackupService {
 
     // Save metadata record to Dexie
     try {
-      await db.systemBackups.add({
-        id: metadata.id,
-        backupName: metadata.name,
-        createdAt: metadata.date.toISOString(),
-        backupType: metadata.type as any,
-        createdBy: 'system',
-        systemVersion: metadata.version,
-        dataSnapshot: '',
-        checksumHash: metadata.checksum,
-        sizeInKB: Math.max(1, Math.round((metadata.size || 0) / 1024)),
-        status: 'SUCCESS',
-        restoreTested: false
-      });
+      if (db.systemBackups) {
+        await db.systemBackups.add({
+          id: metadata.id,
+          backupName: metadata.name,
+          createdAt: metadata.date.toISOString(),
+          backupType: metadata.type as any,
+          createdBy,
+          systemVersion: metadata.version,
+          dataSnapshot: '',
+          checksumHash: metadata.checksum,
+          sizeInKB: Math.max(1, Math.round((metadata.size || 0) / 1024)),
+          status: 'SUCCESS',
+          restoreTested: false
+        });
+      }
     } catch {
       // Non-blocking fallback if systemBackups table is busy
     }
 
     return { metadata, data: encryptedPayloadString, blob: content };
+  }
+
+  /**
+   * Previews backup metadata and archive structure without decrypting payload or touching DB.
+   */
+  async previewBackup(file: File | Blob): Promise<{
+    metadata: Partial<BackupMetadata> | null;
+    hasDataEnc: boolean;
+    fileSize: number;
+    validArchive: boolean;
+  }> {
+    try {
+      const zipData = (typeof Blob !== 'undefined' && file instanceof Blob)
+        ? await file.arrayBuffer()
+        : file;
+      const zip = await JSZip.loadAsync(zipData);
+      const encFile = zip.file("data.enc");
+      const metaFile = zip.file("metadata.json");
+
+      let metadata: Partial<BackupMetadata> | null = null;
+      if (metaFile) {
+        try {
+          const metaText = await metaFile.async("text");
+          metadata = JSON.parse(metaText);
+        } catch {
+          // Non-blocking
+        }
+      }
+
+      return {
+        metadata,
+        hasDataEnc: !!encFile,
+        fileSize: file.size || 0,
+        validArchive: !!encFile
+      };
+    } catch {
+      return {
+        metadata: null,
+        hasDataEnc: false,
+        fileSize: file?.size || 0,
+        validArchive: false
+      };
+    }
   }
 
   /**
@@ -126,12 +187,55 @@ export class BackupService {
   /**
    * Hardened Restore Engine: Executes pre-transaction validation pipeline followed by
    * an atomic Dexie transaction with guaranteed zero partial database writes on failure.
+   * Supports 'PREVIEW', 'VALIDATE', 'DRY_RUN', and 'RESTORE' modes.
    */
-  async restoreBackup(file: File | Blob, password: string): Promise<RestoreResult> {
-    // 1-11: Full validation & parsing pipeline (Zero DB Mutation)
-    const { plan, sanitizedTables, version } = await this.parseAndValidateBackupPayload(file, password);
+  async restoreBackup(
+    file: File | Blob, 
+    password: string, 
+    options?: RestoreOptions
+  ): Promise<RestoreResult> {
+    const mode = options?.mode || 'RESTORE';
 
-    // 12: ATOMIC DATABASE TRANSACTION
+    // Mode: PREVIEW
+    if (mode === 'PREVIEW') {
+      const preview = await this.previewBackup(file);
+      if (!preview.validArchive) {
+        throw new Error("ملف النسخة الاحتياطية غير صالح أو تالف.");
+      }
+      return {
+        success: true,
+        restoredTables: [],
+        restoredRecords: 0,
+        version: preview.metadata?.version || '1.0.0',
+        message: `معاينة ناجحة للنسخة الاحتياطية (${preview.metadata?.name || 'Unknown'})`
+      };
+    }
+
+    // 1-11: Full validation & parsing pipeline (Zero DB Mutation)
+    const { plan, sanitizedTables, version, metadata } = await this.parseAndValidateBackupPayload(file, password);
+
+    // Tenant Isolation Check
+    if (options?.targetTenantId && metadata?.tenantId) {
+      if (metadata.tenantId !== options.targetTenantId && metadata.tenantId !== 'tenant_default') {
+        throw new Error(`خطأ في عزل البيانات: النسخة تتبع المشترك [${metadata.tenantId}] ولا تطابق المشترك الحالي [${options.targetTenantId}].`);
+      }
+    }
+
+    // Mode: VALIDATE or DRY_RUN (Guarantee zero DB mutation)
+    if (mode === 'VALIDATE' || mode === 'DRY_RUN') {
+      return {
+        success: true,
+        restoredTables: plan.tablesToRestore,
+        restoredRecords: plan.totalRecords,
+        warnings: plan.warnings,
+        version,
+        message: mode === 'DRY_RUN' 
+          ? `محاكاة استعادة ناجحة لـ ${plan.totalRecords} سجل عبر ${plan.tablesToRestore.length} جدول دون أي تعديل على قاعدة البيانات`
+          : `تم التحقق من سلامة وصحة النسخة الاحتياطية بنجاح`
+      };
+    }
+
+    // Mode: RESTORE (Strict Atomic Transaction)
     const restoredTables: string[] = [];
     let restoredRecords = 0;
 
@@ -170,12 +274,178 @@ export class BackupService {
       }
     }
 
+    // Audit Log for Restoration
+    try {
+      if (db.auditLogs) {
+        await db.auditLogs.add({
+          id: `AUDIT-RESTORE-${Date.now()}`,
+          userId: 'system',
+          action: 'RESTORE',
+          details: `استعادة نسخة احتياطية: ${restoredRecords} سجل تم استعادتها في ${restoredTables.length} جدول`,
+          timestamp: new Date().toISOString()
+        } as any);
+      }
+    } catch {
+      // Non-blocking
+    }
+
     return {
       success: true,
       restoredTables,
       restoredRecords,
       warnings: plan.warnings,
       version
+    };
+  }
+
+  /**
+   * Executes an Automated Disaster Recovery Drill:
+   * Proves backup encryption, wrong password rejection, corrupted payload rejection,
+   * checksum mismatch rejection, and guarantees live DB zero side-effects.
+   */
+  async executeDisasterRecoveryDrill(password: string = 'DrillSafePass!2026'): Promise<DisasterRecoveryDrillResult> {
+    const drillTimestamp = new Date().toISOString();
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    let healthyBackupValidated = false;
+    let wrongPasswordRejected = false;
+    let corruptedBackupRejected = false;
+    let missingDataEncRejected = false;
+    let checksumMismatchRejected = false;
+    let restorePlanGenerated = false;
+    let databaseUnchangedVerified = false;
+
+    // Snapshot count of records before drill
+    const initialProductCount = db.products ? await db.products.count().catch(() => 0) : 0;
+    const initialInvoiceCount = db.invoices ? await db.invoices.count().catch(() => 0) : 0;
+
+    try {
+      // Step 1: Create synthetic test backup payload
+      const testData = {
+        version: '2.0.0',
+        tables: {
+          products: [
+            { id: 'DR_PROD_1', name: 'Drill Test Product', basePrice: 50, costPrice: 30, quantity: 100 }
+          ],
+          invoices: [
+            { id: 'DR_INV_1', total: 500, status: 'POSTED', customerId: 'CUST_1' }
+          ]
+        }
+      };
+
+      const backupEntry = await this.createLocalBackup(testData, password, 'fast', {
+        tenantId: 'tenant_drill',
+        createdBy: 'dr_drill_system'
+      });
+
+      // Step 2: Validate healthy backup via DRY_RUN mode
+      const validation = await this.validateBackup(backupEntry.blob!, password);
+      if (validation.valid && validation.plan) {
+        healthyBackupValidated = true;
+        restorePlanGenerated = true;
+      } else {
+        errors.push(`Healthy backup validation failed: ${validation.error}`);
+      }
+
+      // Step 3: Test wrong password rejection
+      try {
+        const wrongResult = await this.validateBackup(backupEntry.blob!, 'WRONG_INCORRECT_PASSWORD');
+        if (!wrongResult.valid) {
+          wrongPasswordRejected = true;
+        } else {
+          errors.push("Security breach: Validation unexpectedly succeeded with wrong password!");
+        }
+      } catch {
+        wrongPasswordRejected = true;
+      }
+
+      // Step 4: Test missing data.enc rejection
+      try {
+        const brokenZip = new JSZip();
+        brokenZip.file("metadata.json", JSON.stringify({ version: '2.0.0' }));
+        const brokenBlob = await brokenZip.generateAsync({ type: 'blob' });
+        const missingRes = await this.validateBackup(brokenBlob, password);
+        if (!missingRes.valid) {
+          missingDataEncRejected = true;
+        } else {
+          errors.push("Integrity breach: Archive missing data.enc was not rejected!");
+        }
+      } catch {
+        missingDataEncRejected = true;
+      }
+
+      // Step 5: Test corrupted encrypted payload rejection
+      try {
+        const corruptZip = new JSZip();
+        corruptZip.file("data.enc", "INVALID_NOT_JSON_DATA_CORRUPT");
+        corruptZip.file("metadata.json", JSON.stringify({ version: '2.0.0' }));
+        const corruptBlob = await corruptZip.generateAsync({ type: 'blob' });
+        const corruptRes = await this.validateBackup(corruptBlob, password);
+        if (!corruptRes.valid) {
+          corruptedBackupRejected = true;
+        } else {
+          errors.push("Integrity breach: Corrupted payload was not rejected!");
+        }
+      } catch {
+        corruptedBackupRejected = true;
+      }
+
+      // Step 6: Test checksum mismatch rejection
+      try {
+        const tamperedZip = new JSZip();
+        tamperedZip.file("data.enc", backupEntry.data);
+        tamperedZip.file("metadata.json", JSON.stringify({
+          version: '2.0.0',
+          checksum: '0000000000000000000000000000000000000000000000000000000000000000'
+        }));
+        const tamperedBlob = await tamperedZip.generateAsync({ type: 'blob' });
+        const tamperedRes = await this.validateBackup(tamperedBlob, password);
+        if (!tamperedRes.valid) {
+          checksumMismatchRejected = true;
+        } else {
+          errors.push("Integrity breach: Checksum mismatch was not rejected!");
+        }
+      } catch {
+        checksumMismatchRejected = true;
+      }
+
+      // Step 7: Verify database was completely untouched
+      const afterProductCount = db.products ? await db.products.count().catch(() => 0) : 0;
+      const afterInvoiceCount = db.invoices ? await db.invoices.count().catch(() => 0) : 0;
+
+      if (initialProductCount === afterProductCount && initialInvoiceCount === afterInvoiceCount) {
+        databaseUnchangedVerified = true;
+      } else {
+        errors.push("Side-effect detected: Live database count shifted during drill!");
+      }
+
+    } catch (e: any) {
+      errors.push(`Drill crashed: ${e.message}`);
+    }
+
+    const allPassed = healthyBackupValidated &&
+      wrongPasswordRejected &&
+      missingDataEncRejected &&
+      corruptedBackupRejected &&
+      checksumMismatchRejected &&
+      restorePlanGenerated &&
+      databaseUnchangedVerified &&
+      errors.length === 0;
+
+    return {
+      success: allPassed,
+      drillTimestamp,
+      healthyBackupValidated,
+      wrongPasswordRejected,
+      corruptedBackupRejected,
+      missingDataEncRejected,
+      checksumMismatchRejected,
+      restorePlanGenerated,
+      databaseUnchangedVerified,
+      recoveryReadiness: allPassed ? 'ready' : 'not_ready',
+      errors,
+      warnings
     };
   }
 
@@ -374,6 +644,32 @@ export class BackupService {
     const path = `backups/${backup.metadata.name}`;
     const payload = backup.blob || backup.data;
     return await this.storageAdapter.upload(path, payload, onProgress);
+  }
+
+  /**
+   * Deeply sanitizes data before backup to strip sensitive credentials and prevent prototype pollution
+   */
+  private sanitizeDataBeforeBackup(input: any): any {
+    if (!input || typeof input !== 'object') return input;
+    if (Array.isArray(input)) {
+      return input.map(item => this.sanitizeDataBeforeBackup(item));
+    }
+    const sanitized: Record<string, any> = {};
+    const forbiddenKeys = new Set(['backuppassword', 'refreshtoken', 'accesstoken', 'secretkey', 'privatekey', 'credentials']);
+    for (const [key, value] of Object.entries(input)) {
+      if (forbiddenKeys.has(key.toLowerCase())) {
+        continue;
+      }
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+        continue;
+      }
+      if (value && typeof value === 'object') {
+        sanitized[key] = this.sanitizeDataBeforeBackup(value);
+      } else {
+        sanitized[key] = value;
+      }
+    }
+    return sanitized;
   }
 
   private async calculateChecksum(data: string): Promise<string> {

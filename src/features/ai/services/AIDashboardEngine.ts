@@ -1,5 +1,6 @@
 import { GeminiAnalyticsService } from './GeminiAnalyticsService';
 import { DashboardAggregationService } from '@/services/dashboard/DashboardAggregationService';
+import { configurationService } from '@/services/config/configurationService';
 
 export interface DashboardMetrics {
   totalSales: number;
@@ -40,14 +41,7 @@ export class AIDashboardEngine {
     // 9) Optional Gemini Summary
     let recommendations = '';
     const now = Date.now();
-    const cachedAIStr = localStorage.getItem(this.AI_CACHE_KEY);
-    let cachedAI: any = null;
-    
-    if (cachedAIStr) {
-      try {
-        cachedAI = JSON.parse(cachedAIStr);
-      } catch (e) {}
-    }
+    const cachedAI: any = configurationService.getSync(this.AI_CACHE_KEY);
     
     if (!forceRefreshAI && cachedAI && (now - cachedAI.timestamp < this.AI_CACHE_DURATION)) {
       recommendations = cachedAI.recommendations;
@@ -63,7 +57,7 @@ export class AIDashboardEngine {
           todaySummary: metrics.todaySummary
         };
         recommendations = await GeminiAnalyticsService.analyzeData("قدم ملخصاً ذكياً وتوصيات بناءً على هذه المؤشرات المالية والتشغيلية للمؤسسة اليوم.", summaryData);
-        localStorage.setItem(this.AI_CACHE_KEY, JSON.stringify({ recommendations, timestamp: now }));
+        configurationService.set(this.AI_CACHE_KEY, { recommendations, timestamp: now }).catch(() => {});
       } catch (e) {
         console.error("Gemini summary failed:", e);
         recommendations = cachedAI?.recommendations || "تعذر الحصول على ملخص ذكي حالياً.";

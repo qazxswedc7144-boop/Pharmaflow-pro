@@ -29,6 +29,18 @@ export class AIContextBuilder {
     domains: Array<'inventory' | 'sales' | 'purchases' | 'financials' | 'drugInfo'>,
     extraParams?: Record<string, unknown>
   ): Promise<ConsolidatedAIContext> {
+    if (!userContext || !userContext.tenantId || typeof userContext.tenantId !== 'string') {
+      throw new Error('TENANT_MISMATCH: معرف المنشأة (tenantId) مفقود في جلسة المستخدم المصادق عليها.');
+    }
+
+    if (!userContext.userId) {
+      throw new Error('AUTHENTICATION_REQUIRED: معرف المستخدم إلزامي لبناء سياق الذكاء الاصطناعي.');
+    }
+
+    if (extraParams?.tenantId && extraParams.tenantId !== userContext.tenantId) {
+      throw new Error('TENANT_MISMATCH: تعارض بين معرف المنشأة في الطلب وجلسة المستخدم المصادق عليها.');
+    }
+
     const consolidated: ConsolidatedAIContext = {
       user: userContext,
       timestamp: new Date().toISOString(),

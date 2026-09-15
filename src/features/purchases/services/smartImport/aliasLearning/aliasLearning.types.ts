@@ -147,7 +147,8 @@ export interface AliasMatchCandidateResult {
     | 'CODE' 
     | 'EXACT' 
     | 'NORMALIZED' 
-    | 'FUZZY';
+    | 'FUZZY'
+    | 'MANUAL_REVIEW';
   confidence: number;
   aliasId?: string;
   isSupplierSpecific: boolean;

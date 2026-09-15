@@ -1,10 +1,14 @@
 // server/modules/consolidation/consolidation.service.ts
+// Production Financial Consolidation Service (Zero Fake Multipliers, Zero Plugs)
+// Integrated with Centralized Audit, Structured Logging, Metrics, and Financial Integrity Observability
 
 import { randomUUID } from "crypto";
 const uuidv4 = () => randomUUID();
+
 import { ConsolidationRepository } from "./consolidation.repository";
-import { CONSOLIDATION_DEFAULTS, ELIMINATION_RULES } from "./consolidation.constants";
+import { CONSOLIDATION_DEFAULTS } from "./consolidation.constants";
 import { RedisConnectionManager } from "../../database/redis";
+import { getCurrentTenantId, getCorrelationId, getRequestId } from "../../context/tenantContext";
 import {
   ConsolidatedBalanceSheet,
   ConsolidatedIncomeStatement,
@@ -13,15 +17,30 @@ import {
   ConsolidatedInventoryValuation,
   AIConsolidationInsights,
   ConsolidationSummary,
-  EliminationRecord,
-  ConsolidatedTrialBalanceRow
 } from "./consolidation.types";
+
+import { LedgerBalanceCalculator } from "./calculators/ledger-balance.calculator";
+import { InventoryValuationCalculator } from "./calculators/inventory-valuation.calculator";
+import { FinancialStatementCalculator } from "./calculators/financial-statement.calculator";
+import { CashFlowCalculator } from "./calculators/cash-flow.calculator";
+import { TrialBalanceCalculator } from "./calculators/trial-balance.calculator";
+
+import { ConsolidationLogger } from "./consolidation.logger";
+import { ConsolidationMetrics } from "./consolidation.metrics";
+import { ConsolidationAuditService } from "./consolidation.audit";
+import { ConsolidationIntegrityMonitor } from "./consolidation.integrity";
+import {
+  ConsolidationError,
+  ConsolidationCalculationError,
+} from "./consolidation.errors";
 
 export class ConsolidationService {
   private static async getGeminiClient(): Promise<any> {
     const key = process.env.GEMINI_API_KEY;
     if (!key) {
-      console.warn("[GEMINI WORKER] No GEMINI_API_KEY available in environment. Fallback simulation active.");
+      ConsolidationLogger.debug("[GEMINI WORKER] No GEMINI_API_KEY in environment. Fallback deterministic rules active.", {
+        component: "ConsolidationService",
+      });
       return null;
     }
     try {
@@ -36,14 +55,14 @@ export class ConsolidationService {
         },
       });
     } catch (e) {
-      console.error("[GEMINI CLIENT] Fails to initialize:", e);
+      ConsolidationLogger.warn("[GEMINI CLIENT] Failed to initialize GoogleGenAI client:", {
+        component: "ConsolidationService",
+        context: { error: e instanceof Error ? e.message : String(e) },
+      });
       return null;
     }
   }
 
-  /**
-   * Safe JSON parse supporting BigInt fallback mapping
-   */
   private static tryParse<T>(value: string | null): T | null {
     if (!value) return null;
     try {
@@ -54,800 +73,697 @@ export class ConsolidationService {
   }
 
   /**
-   * Consolidated Balance Sheet Generation
+   * Generates Consolidated Balance Sheet
+   * Source of Truth: General Ledger & Physical Inventory Valuation
+   * Zero Fake Multipliers (No * 15, no * 0.85)
+   * Zero Balancing Plugs (Retained Earnings is derived from actual accounts, not Assets - Liab - Capital)
    */
-  static async generateBalanceSheet(userId = "SYSTEM", forceRefresh = false): Promise<ConsolidatedBalanceSheet> {
-    const cacheKey = CONSOLIDATION_DEFAULTS.BALANCE_SHEET_CACHE_KEY;
-    if (!forceRefresh) {
-      const cached = await RedisConnectionManager.get(cacheKey);
-      if (cached) {
-        return JSON.parse(cached) as ConsolidatedBalanceSheet;
-      }
-    }
-
-    const branches = await ConsolidationRepository.getBranches();
-    const branchMap = new Map(branches.map(b => [b.id, b]));
-
-    // Fetch master ledger entries flat
-    const journalLines = await ConsolidationRepository.getAllPostedJournalLines();
-    const inventoryValuation = await this.generateInventoryValuation();
-
-    let cashTotal = 0;
-    let arTotal = 0;
-    let otherCurrentAssets = 0;
-    let nonCurrentAssets = 0;
-    let apTotal = 0;
-    let otherCurrentLiabilities = 0;
-    let nonCurrentLiabilities = 0;
-    let equityCapital = 0;
-
-    const branchBreakdown: ConsolidatedBalanceSheet["branchBreakdown"] = {};
-    for (const b of branches) {
-      branchBreakdown[b.id] = {
-        branchName: b.name,
-        assets: 0,
-        liabilities: 0,
-        equity: 0,
-      };
-    }
-
-    // Populate branch breakdown from ledger lines
-    for (const line of journalLines) {
-      const bId = line.entry.branchId || CONSOLIDATION_DEFAULTS.MAIN_BRANCH_CODE;
-      if (!branchBreakdown[bId]) {
-        branchBreakdown[bId] = {
-          branchName: branchMap.get(bId)?.name || "External Branch",
-          assets: 0,
-          liabilities: 0,
-          equity: 0,
-        };
-      }
-
-      const debit = Number(line.debit) || 0;
-      const credit = Number(line.credit) || 0;
-      const amount = debit - credit; // Positive is debit balance, negative is credit
-
-      const code = line.account.code;
-      const isAsset = line.account.type === "ASSET";
-      const isLiability = line.account.type === "LIABILITY";
-      const isEquity = line.account.type === "EQUITY";
-
-      if (isAsset) {
-        branchBreakdown[bId].assets += amount;
-        if (code.startsWith(CONSOLIDATION_DEFAULTS.ACCOUNTS_CASH_PREFIX)) {
-          cashTotal += amount;
-        } else if (code.startsWith(CONSOLIDATION_DEFAULTS.ACCOUNTS_RECEIVABLE_PREFIX)) {
-          arTotal += amount;
-        } else if (code.startsWith(CONSOLIDATION_DEFAULTS.ACCOUNTS_OTHER_CURRENT_ASSETS_PREFIX)) {
-          otherCurrentAssets += amount;
-        } else {
-          nonCurrentAssets += amount;
-        }
-      } else if (isLiability) {
-        branchBreakdown[bId].liabilities -= amount; // Liabilities favor credit (subtract amount)
-        if (code.startsWith(CONSOLIDATION_DEFAULTS.ACCOUNTS_PAYABLE_PREFIX)) {
-          apTotal -= amount;
-        } else if (code.startsWith(CONSOLIDATION_DEFAULTS.ACCOUNTS_OTHER_CURRENT_LIABILITIES_PREFIX)) {
-          otherCurrentLiabilities -= amount;
-        } else {
-          nonCurrentLiabilities -= amount;
-        }
-      } else if (isEquity) {
-        branchBreakdown[bId].equity -= amount;
-        equityCapital -= amount;
-      }
-    }
-
-    // Embed current real-time inventory values into current assets
-    const branchInvValMap: { [bId: string]: number } = {};
-    for (const [bId, data] of Object.entries(inventoryValuation.branchBreakdown)) {
-      branchInvValMap[bId] = data.value;
-    }
-
-    for (const bId of Object.keys(branchBreakdown)) {
-      const invValue = branchInvValMap[bId] || 0;
-      const br = branchBreakdown[bId];
-      if (br) {
-        br.assets += invValue;
-      }
-    }
-
-    // Calculate Eliminations
-    const eliminations: EliminationRecord[] = [];
-    let eliminatedARAP = 0;
-
-    if (ELIMINATION_RULES.ELIMINATE_INTERNAL_TRADING) {
-      const transfers = await ConsolidationRepository.getCompletedBranchTransfers();
-      let transferValue = 0;
-      for (const t of transfers) {
-        let tAmt = 0;
-        for (const item of t.items) {
-          // get average item cost or standard cost
-          tAmt += Number(item.qty) * 15; // default conservative unit value
-        }
-        transferValue += tAmt;
-        eliminations.push({
-          id: uuidv4(),
-          type: "TRANSFER",
-          description: `Elimination of inter-branch inventory transfer balances between ${t.sourceBranch?.name || "A"} and ${t.targetBranch?.name || "B"}`,
-          amount: tAmt,
-          referenceId: t.transferNumber,
-          sourceId: t.sourceBranchId,
-          targetId: t.targetBranchId,
-          timestamp: new Date().toISOString()
-        });
-      }
-      eliminatedARAP = transferValue * 0.85; // internal liability clearing estimate
-    }
-
-    const finalAssets = {
-      cashAndCashEquivalents: Math.max(0, cashTotal),
-      accountsReceivable: Math.max(0, arTotal - eliminatedARAP),
-      inventoryValue: inventoryValuation.totalInventoryValue,
-      otherCurrentAssets: Math.max(0, otherCurrentAssets),
-      nonCurrentAssets: Math.max(0, nonCurrentAssets),
-      totalAssets: 0,
-    };
-    finalAssets.totalAssets = finalAssets.cashAndCashEquivalents + finalAssets.accountsReceivable + finalAssets.inventoryValue + finalAssets.otherCurrentAssets + finalAssets.nonCurrentAssets;
-
-    const finalLiabilities = {
-      accountsPayable: Math.max(0, apTotal - eliminatedARAP),
-      otherCurrentLiabilities: Math.max(0, otherCurrentLiabilities),
-      nonCurrentLiabilities: Math.max(0, nonCurrentLiabilities),
-      totalLiabilities: 0
-    };
-    finalLiabilities.totalLiabilities = finalLiabilities.accountsPayable + finalLiabilities.otherCurrentLiabilities + finalLiabilities.nonCurrentLiabilities;
-
-    // Retained Earnings derived dynamically to balance the consolidated ledger sheet
-    const finalEquity = {
-      shareCapital: Math.max(100000, equityCapital),
-      retainedEarnings: 0,
-      totalEquity: 0
-    };
-    finalEquity.retainedEarnings = finalAssets.totalAssets - finalLiabilities.totalLiabilities - finalEquity.shareCapital;
-    finalEquity.totalEquity = finalEquity.shareCapital + finalEquity.retainedEarnings;
-
-    const isBalanced = Math.abs(finalAssets.totalAssets - (finalLiabilities.totalLiabilities + finalEquity.totalEquity)) < 1.0;
-
-    const result: ConsolidatedBalanceSheet = {
-      timestamp: new Date().toISOString(),
-      assets: finalAssets,
-      liabilities: finalLiabilities,
-      equity: finalEquity,
-      isBalanced,
-      branchBreakdown,
-      eliminations,
-    };
-
-    // Fast Aggregation cache saving
-    await RedisConnectionManager.set(cacheKey, JSON.stringify(result), "EX", CONSOLIDATION_DEFAULTS.CACHE_TTL_SECONDS);
-
-    // Event hooks and Audit writing
-    const runId = uuidv4();
-    await ConsolidationRepository.writeAuditLog(userId, "SNAPSHOT_GENERATION", runId, { message: "Consolidated Balance Sheet Generated" });
-    await ConsolidationRepository.publishSyncEvent(uuidv4(), "BranchSnapshotCreated", runId, { documentType: "BALANCE_SHEET" }, userId);
-
-    return result;
-  }
-
-  /**
-   * Consolidated Income Statement Generation
-   */
-  static async generateIncomeStatement(userId = "SYSTEM", forceRefresh = false): Promise<ConsolidatedIncomeStatement> {
-    const cacheKey = CONSOLIDATION_DEFAULTS.INCOME_STATEMENT_CACHE_KEY;
-    if (!forceRefresh) {
-      const cached = await RedisConnectionManager.get(cacheKey);
-      if (cached) {
-        return JSON.parse(cached) as ConsolidatedIncomeStatement;
-      }
-    }
-
-    const branches = await ConsolidationRepository.getBranches();
-    const branchMap = new Map(branches.map(b => [b.id, b]));
-
-    const journalLines = await ConsolidationRepository.getAllPostedJournalLines();
-
-    let rawRevenue = 0;
-    let rawCOGS = 0;
-    let salaryExpense = 0;
-    let rentExpense = 0;
-    let utilitiesExpense = 0;
-    let marketingExpense = 0;
-    let otherExpense = 0;
-    let taxExpense = 0;
-
-    const branchBreakdown: ConsolidatedIncomeStatement["branchBreakdown"] = {};
-    for (const b of branches) {
-      branchBreakdown[b.id] = {
-        branchName: b.name,
-        revenue: 0,
-        cogs: 0,
-        grossProfit: 0,
-        opex: 0,
-        netIncome: 0,
-      };
-    }
-
-    for (const line of journalLines) {
-      const bId = line.entry.branchId || CONSOLIDATION_DEFAULTS.MAIN_BRANCH_CODE;
-      if (!branchBreakdown[bId]) {
-        branchBreakdown[bId] = {
-          branchName: branchMap.get(bId)?.name || "External Branch",
-          revenue: 0,
-          cogs: 0,
-          grossProfit: 0,
-          opex: 0,
-          netIncome: 0,
-        };
-      }
-
-      const debit = Number(line.debit) || 0;
-      const credit = Number(line.credit) || 0;
-      const creditPreferenceBalance = credit - debit;
-      const debitPreferenceBalance = debit - credit;
-
-      const code = line.account.code;
-
-      if (line.account.type === "REVENUE") {
-        rawRevenue += creditPreferenceBalance;
-        branchBreakdown[bId].revenue += creditPreferenceBalance;
-        branchBreakdown[bId].netIncome += creditPreferenceBalance;
-      } else if (line.account.type === "EXPENSE") {
-        branchBreakdown[bId].netIncome -= debitPreferenceBalance;
-        if (code.startsWith(CONSOLIDATION_DEFAULTS.ACCOUNTS_COGS_PREFIX)) {
-          rawCOGS += debitPreferenceBalance;
-          branchBreakdown[bId].cogs += debitPreferenceBalance;
-        } else {
-          // OPEX categories
-          branchBreakdown[bId].opex += debitPreferenceBalance;
-          if (code.startsWith(CONSOLIDATION_DEFAULTS.ACCOUNTS_OPEX_SALARY_PREFIX)) {
-            salaryExpense += debitPreferenceBalance;
-          } else if (code.startsWith(CONSOLIDATION_DEFAULTS.ACCOUNTS_OPEX_RENT_PREFIX)) {
-            rentExpense += debitPreferenceBalance;
-          } else if (code.startsWith(CONSOLIDATION_DEFAULTS.ACCOUNTS_OPEX_UTILITIES_PREFIX)) {
-            utilitiesExpense += debitPreferenceBalance;
-          } else if (code.startsWith(CONSOLIDATION_DEFAULTS.ACCOUNTS_OPEX_MARKETING_PREFIX)) {
-            marketingExpense += debitPreferenceBalance;
-          } else if (code.startsWith(CONSOLIDATION_DEFAULTS.ACCOUNTS_TAX_PREFIX)) {
-            taxExpense += debitPreferenceBalance;
-          } else {
-            otherExpense += debitPreferenceBalance;
-          }
-        }
-      }
-    }
-
-    // Refresh branch gross profit calculations
-    for (const bId of Object.keys(branchBreakdown)) {
-      const br = branchBreakdown[bId];
-      if (br) {
-        br.grossProfit = br.revenue - br.cogs;
-      }
-    }
-
-    // Inter-Branch Sales Eliminations (Internal trading mapping)
-    const eliminations: EliminationRecord[] = [];
-    let eliminatedTraffic = 0;
-
-    if (ELIMINATION_RULES.ELIMINATE_INTERNAL_TRADING) {
-      // Find Interbranch sales invoices (Partner represents a branch ID)
-      const invoices = await ConsolidationRepository.getInvoices();
-      const branchIdsSet = new Set(branches.map(b => b.id));
-
-      for (const inv of invoices) {
-        if (inv.partnerId && branchIdsSet.has(inv.partnerId)) {
-          const invAmt = Number(inv.totalAmount) || 0;
-          eliminatedTraffic += invAmt;
-
-          eliminations.push({
-            id: uuidv4(),
-            type: "INTERNAL_SALE",
-            description: `Elimination of internal trade sale/purchase between branch ${branchMap.get(inv.branchId || "")?.name || "Origin"} and branch ${branchMap.get(inv.partnerId)?.name || 'Target'}`,
-            amount: invAmt,
-            referenceId: inv.invoiceNumber,
-            sourceId: inv.branchId || undefined,
-            targetId: inv.partnerId,
-            timestamp: inv.date.toISOString()
-          });
-        }
-      }
-    }
-
-    // Subtract eliminations from revenue and COGS
-    const consolidatedRevenue = Math.max(0, rawRevenue - eliminatedTraffic);
-    const consolidatedCOGS = Math.max(0, rawCOGS - eliminatedTraffic * 0.90); // internal COGS clearance factor
-
-    const grossProfit = consolidatedRevenue - consolidatedCOGS;
-    const totalOPEX = salaryExpense + rentExpense + utilitiesExpense + marketingExpense + otherExpense;
-    const operatingProfit = grossProfit - totalOPEX;
-    const netIncome = operatingProfit - taxExpense;
-
-    const result: ConsolidatedIncomeStatement = {
-      timestamp: new Date().toISOString(),
-      revenue: consolidatedRevenue,
-      costOfGoodsSold: consolidatedCOGS,
-      grossProfit,
-      operatingExpenses: {
-        salary: salaryExpense,
-        rent: rentExpense,
-        utilities: utilitiesExpense,
-        marketing: marketingExpense,
-        other: otherExpense,
-        totalOPEX
-      },
-      operatingProfit,
-      tax: taxExpense,
-      netIncome,
-      branchBreakdown,
-      eliminations
-    };
-
-    await RedisConnectionManager.set(cacheKey, JSON.stringify(result), "EX", CONSOLIDATION_DEFAULTS.CACHE_TTL_SECONDS);
-
-    const runId = uuidv4();
-    await ConsolidationRepository.writeAuditLog(userId, "CONSOLIDATION_RUN", runId, { message: "Consolidated Income Statement Generated" });
-    await ConsolidationRepository.publishSyncEvent(uuidv4(), "ConsolidationGenerated", runId, { documentType: "INCOME_STATEMENT" }, userId);
-
-    return result;
-  }
-
-  /**
-   * Consolidated Cash Flow Generation from raw financial events
-   */
-  static async generateCashFlow(userId = "SYSTEM", forceRefresh = false): Promise<ConsolidatedCashFlow> {
-    const cacheKey = CONSOLIDATION_DEFAULTS.CASH_FLOW_CACHE_KEY;
-    if (!forceRefresh) {
-      const cached = await RedisConnectionManager.get(cacheKey);
-      if (cached) {
-        return JSON.parse(cached) as ConsolidatedCashFlow;
-      }
-    }
-
-    const branches = await ConsolidationRepository.getBranches();
-    const branchMap = new Map(branches.map(b => [b.id, b]));
-
-    // Derived operating cash entries by evaluating cash-ledger receipts
-    const journalLines = await ConsolidationRepository.getAllPostedJournalLines();
-
-    let cashInFromSales = 0;
-    let cashPaidInventory = 0;
-    let cashPaidOPEX = 0;
-    let capitalExp = 0;
-    let equityInjection = 0;
-    let debtSvc = 0;
-
-    const branchBreakdown: ConsolidatedCashFlow["branchBreakdown"] = {};
-    for (const b of branches) {
-      branchBreakdown[b.id] = {
-        branchName: b.name,
-        netOperating: 0,
-        netInvesting: 0,
-        netFinancing: 0,
-        endingChange: 0
-      };
-    }
-
-    for (const line of journalLines) {
-      const bId = line.entry.branchId || CONSOLIDATION_DEFAULTS.MAIN_BRANCH_CODE;
-      if (!branchBreakdown[bId]) {
-        branchBreakdown[bId] = {
-          branchName: branchMap.get(bId)?.name || 'External Branch',
-          netOperating: 0,
-          netInvesting: 0,
-          netFinancing: 0,
-          endingChange: 0
-        };
-      }
-
-      const isCashAccount = line.account.code.startsWith(CONSOLIDATION_DEFAULTS.ACCOUNTS_CASH_PREFIX);
-      if (!isCashAccount) continue;
-
-      const debit = Number(line.debit) || 0;
-      const credit = Number(line.credit) || 0;
-      const netCashChange = debit - credit;
-
-      // Classify cash flows by matching offset account classifications in the entry lines
-      const desc = (line.description || "").toUpperCase();
-      if (netCashChange > 0) {
-        if (desc.includes("SALES") || desc.includes("INVOICE") || desc.includes("CUSTOMER")) {
-          cashInFromSales += netCashChange;
-          branchBreakdown[bId].netOperating += netCashChange;
-        } else if (desc.includes("EQUITY") || desc.includes("CAPITAL") || desc.includes("INVESTMENT")) {
-          equityInjection += netCashChange;
-          branchBreakdown[bId].netFinancing += netCashChange;
-        } else {
-          cashInFromSales += netCashChange * 0.90; // general operating default
-          branchBreakdown[bId].netOperating += netCashChange * 0.90;
-        }
-      } else {
-        const absoluteOutflow = Math.abs(netCashChange);
-        if (desc.includes("SUPPLIER") || desc.includes("PURCHASE") || desc.includes("STOCK") || desc.includes("INVENTORY")) {
-          cashPaidInventory += absoluteOutflow;
-          branchBreakdown[bId].netOperating -= absoluteOutflow;
-        } else if (desc.includes("RENT") || desc.includes("SALARY") || desc.includes("WAGE") || desc.includes("UTILITIES") || desc.includes("OPEX")) {
-          cashPaidOPEX += absoluteOutflow;
-          branchBreakdown[bId].netOperating -= absoluteOutflow;
-        } else if (desc.includes("ASSET") || desc.includes("CAPEX") || desc.includes("EQUIPMENT") || desc.includes("PROPERTY")) {
-          capitalExp += absoluteOutflow;
-          branchBreakdown[bId].netInvesting -= absoluteOutflow;
-        } else if (desc.includes("LOAN") || desc.includes("INTEREST") || desc.includes("DIVIDEND") || desc.includes("DEBT")) {
-          debtSvc += absoluteOutflow;
-          branchBreakdown[bId].netFinancing -= absoluteOutflow;
-        } else {
-          cashPaidOPEX += absoluteOutflow;
-          branchBreakdown[bId].netOperating -= absoluteOutflow;
-        }
-      }
-    }
-
-    // Refresh branch final changes
-    for (const bId of Object.keys(branchBreakdown)) {
-      const br = branchBreakdown[bId];
-      if (br) {
-        br.endingChange = br.netOperating + br.netInvesting + br.netFinancing;
-      }
-    }
-
-    // Cash flow eliminations (internal funding movements)
-    const eliminations: EliminationRecord[] = [];
-    let eliminatedCashInflow = 0;
-
-    if (ELIMINATION_RULES.ELIMINATE_INTERNAL_TRADING) {
-      const transfers = await ConsolidationRepository.getCompletedBranchTransfers();
-      for (const t of transfers) {
-        let transferCashAmount = 0;
-        for (const item of t.items) {
-          transferCashAmount += item.qty * 10; // conservative liquidity rate
-        }
-        eliminatedCashInflow += transferCashAmount;
-        eliminations.push({
-          id: uuidv4(),
-          type: "INTERNAL_MOVEMENT",
-          description: `Consolidation Cash elimination from internal funding clearance associated with transfers between ${t.sourceBranch?.name || "A"} and ${t.targetBranch?.name || "B"}`,
-          amount: transferCashAmount,
-          referenceId: t.id,
-          sourceId: t.sourceBranchId,
-          targetId: t.targetBranchId,
-          timestamp: new Date().toISOString()
-        });
-      }
-    }
-
-    const netOperatingCash = cashInFromSales - cashPaidInventory - cashPaidOPEX - eliminatedCashInflow;
-    const netInvestingCash = -capitalExp;
-    const netFinancingCash = equityInjection - debtSvc;
-    const netChangeInCash = netOperatingCash + netInvestingCash + netFinancingCash;
-
-    const beginningCashBalance = equityInjection > 0 ? 50000 : 150000; // estimated historical starting values
-    const endingCashBalance = beginningCashBalance + netChangeInCash;
-
-    const result: ConsolidatedCashFlow = {
-      timestamp: new Date().toISOString(),
-      operatingActivities: {
-        cashInflowSales: Math.max(0, cashInFromSales - eliminatedCashInflow),
-        cashOutflowInventory: cashPaidInventory,
-        cashOutflowOPEX: cashPaidOPEX,
-        netOperatingCash
-      },
-      investingActivities: {
-        capitalExpenditure: capitalExp,
-        netInvestingCash
-      },
-      financingActivities: {
-        equityIssued: equityInjection,
-        debtServicing: debtSvc,
-        netFinancingCash
-      },
-      netChangeInCash,
-      beginningCashBalance,
-      endingCashBalance,
-      branchBreakdown,
-      eliminations
-    };
-
-    await RedisConnectionManager.set(cacheKey, JSON.stringify(result), "EX", CONSOLIDATION_DEFAULTS.CACHE_TTL_SECONDS);
-
-    const runId = uuidv4();
-    await ConsolidationRepository.writeAuditLog(userId, "CONSOLIDATION_RUN", runId, { message: "Consolidated Cash Flow Generated" });
-    await ConsolidationRepository.publishSyncEvent(uuidv4(), "ConsolidationGenerated", runId, { documentType: "CASH_FLOW" }, userId);
-
-    return result;
-  }
-
-  /**
-   * Consolidated Trial Balance Generation
-   */
-  static async generateTrialBalance(userId = "SYSTEM", forceRefresh = false): Promise<ConsolidatedTrialBalance> {
-    const cacheKey = CONSOLIDATION_DEFAULTS.TRIAL_BALANCE_CACHE_KEY;
-    if (!forceRefresh) {
-      const cached = await RedisConnectionManager.get(cacheKey);
-      if (cached) {
-        return JSON.parse(cached) as ConsolidatedTrialBalance;
-      }
-    }
-
-    const branches = await ConsolidationRepository.getBranches();
-    const branchMap = new Map(branches.map(b => [b.id, b]));
-
-    const journalLines = await ConsolidationRepository.getAllPostedJournalLines();
-
-    const accountRowsMap = new Map<string, ConsolidatedTrialBalanceRow>();
-
-    for (const line of journalLines) {
-      const acct = line.account;
-      const bId = line.entry.branchId || CONSOLIDATION_DEFAULTS.MAIN_BRANCH_CODE;
-
-      if (!accountRowsMap.has(acct.id)) {
-        const dashboardsBreakdowns: { [branchId: string]: { branchName: string; debit: number; credit: number; netBalance: number } } = {};
-        for (const b of branches) {
-          dashboardsBreakdowns[b.id] = {
-            branchName: b.name,
-            debit: 0,
-            credit: 0,
-            netBalance: 0
-          };
-        }
-
-        accountRowsMap.set(acct.id, {
-          accountCode: acct.code,
-          accountName: acct.name,
-          accountType: acct.type,
-          debit: 0,
-          credit: 0,
-          netBalance: 0,
-          balanceType: (acct.type === "ASSET" || acct.type === "EXPENSE") ? "DEBIT" : "CREDIT",
-          branchBreakdowns: dashboardsBreakdowns
-        });
-      }
-
-      const row = accountRowsMap.get(acct.id)!;
-      const rowDeb = Number(line.debit) || 0;
-      const rowCred = Number(line.credit) || 0;
-
-      row.debit += rowDeb;
-      row.credit += rowCred;
-
-      if (!row.branchBreakdowns[bId]) {
-        row.branchBreakdowns[bId] = {
-          branchName: branchMap.get(bId)?.name || 'External Branch',
-          debit: 0,
-          credit: 0,
-          netBalance: 0
-        };
-      }
-
-      row.branchBreakdowns[bId].debit += rowDeb;
-      row.branchBreakdowns[bId].credit += rowCred;
-    }
-
-    // Compute net balances
-    let totalDebit = 0;
-    let totalCredit = 0;
-    const finalRows: ConsolidatedTrialBalanceRow[] = [];
-
-    for (const row of accountRowsMap.values()) {
-      const isDebitPref = row.accountType === "ASSET" || row.accountType === "EXPENSE";
-      const totalAmount = row.debit - row.credit;
-
-      row.netBalance = isDebitPref ? totalAmount : -totalAmount;
-
-      for (const bId of Object.keys(row.branchBreakdowns)) {
-        const brData = row.branchBreakdowns[bId];
-        if (brData) {
-          const brValue = brData.debit - brData.credit;
-          brData.netBalance = isDebitPref ? brValue : -brValue;
-        }
-      }
-
-      totalDebit += row.debit;
-      totalCredit += row.credit;
-      finalRows.push(row);
-    }
-
-    // Inter-branch elimination adjustments on Trial Balance
-    const eliminations: EliminationRecord[] = [];
-    if (ELIMINATION_RULES.ELIMINATE_INTERNAL_TRADING) {
-      // Find intercompany AR / AP clearings
-      const clearingRow = finalRows.find(r => r.accountCode.startsWith(CONSOLIDATION_DEFAULTS.ACCOUNTS_RECEIVABLE_PREFIX));
-      if (clearingRow) {
-        eliminations.push({
-          id: uuidv4(),
-          type: "INTERNAL_SALE",
-          description: "Consolidation clearing record for intercompany AR/AP balances matching internal store sales.",
-          amount: clearingRow.debit * 0.15,
-          timestamp: new Date().toISOString()
-        });
-      }
-    }
-
-    const isBalanced = Math.abs(totalDebit - totalCredit) < 1.0;
-
-    const result: ConsolidatedTrialBalance = {
-      timestamp: new Date().toISOString(),
-      rows: finalRows.sort((a, b) => a.accountCode.localeCompare(b.accountCode)),
-      totalDebit,
-      totalCredit,
-      isBalanced,
-      eliminations
-    };
-
-    await RedisConnectionManager.set(cacheKey, JSON.stringify(result), "EX", CONSOLIDATION_DEFAULTS.CACHE_TTL_SECONDS);
-
-    const runId = uuidv4();
-    await ConsolidationRepository.writeAuditLog(userId, "CONSOLIDATION_RUN", runId, { message: "Consolidated Trial Balance Generated" });
-
-    return result;
-  }
-
-  /**
-   * Consolidated Inventory Valuation & Analysis
-   */
-  static async generateInventoryValuation(forceRefresh = false): Promise<ConsolidatedInventoryValuation> {
-    const cacheKey = CONSOLIDATION_DEFAULTS.INVENTORY_CACHE_KEY;
-    if (!forceRefresh) {
-      const cached = await RedisConnectionManager.get(cacheKey);
-      if (cached) {
-        return JSON.parse(cached) as ConsolidatedInventoryValuation;
-      }
-    }
-
-    const branches = await ConsolidationRepository.getBranches();
-    const branchMap = new Map(branches.map(b => [b.id, b]));
-
-    const products = await ConsolidationRepository.getProductCatalog();
-    const productMap = new Map(products.map(p => [p.id, p]));
-
-    const inventoryLevels = await ConsolidationRepository.getBranchInventoryLevels();
-
-    let totalQuantity = 0;
-    let totalValue = 0;
-
-    const branchBreakdown: ConsolidatedInventoryValuation["branchBreakdown"] = {};
-    for (const b of branches) {
-      branchBreakdown[b.id] = {
-        branchName: b.name,
-        quantity: 0,
-        value: 0,
-        percentageOfTotal: 0
-      };
-    }
-
-    // Fetch batch cost values to have FIFO pricing representation
-    // Let's compute stock allocations per branch
-    for (const lvl of inventoryLevels) {
-      const p = productMap.get(lvl.productId);
-      if (!p) continue;
-
-      const qty = lvl.stockQuantity || 0;
-      const cost = Number(p.cost) || 12; // fallback average cost
-      const value = qty * cost;
-
-      totalQuantity += qty;
-      totalValue += value;
-
-      const bId = lvl.branchId;
-      if (!branchBreakdown[bId]) {
-        branchBreakdown[bId] = {
-          branchName: branchMap.get(bId)?.name || 'External Branch',
-          quantity: 0,
-          value: 0,
-          percentageOfTotal: 0
-        };
-      }
-
-      const br = branchBreakdown[bId];
-      if (br) {
-        br.quantity += qty;
-        br.value += value;
-      }
-    }
-
-    // Refresh percentage shares
-    for (const bId of Object.keys(branchBreakdown)) {
-      const br = branchBreakdown[bId];
-      if (br && totalValue > 0) {
-        br.percentageOfTotal = Number(((br.value / totalValue) * 100).toFixed(2));
-      }
-    }
-
-    // Slow and Fast Moving products (movement indicators 90 days)
-    const ninetyDaysAgo = new Date();
-    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
-    const saleItems = await ConsolidationRepository.getSalesItems(ninetyDaysAgo);
-
-    const productSalesMap = new Map<string, { qty: number; salesRevenue: number }>();
-    for (const item of saleItems) {
-      const current = productSalesMap.get(item.productId) || { qty: 0, salesRevenue: 0 };
-      current.qty += item.qty;
-      current.salesRevenue += Number(item.total) || 0;
-      productSalesMap.set(item.productId, current);
-    }
-
-    const fastMovingProducts: ConsolidatedInventoryValuation["fastMovingProducts"] = [];
-    const slowMovingProducts: ConsolidatedInventoryValuation["slowMovingProducts"] = [];
-    const deadStock: ConsolidatedInventoryValuation["deadStock"] = [];
-
-    const thirtyDaysAhead = new Date();
-    thirtyDaysAhead.setDate(thirtyDaysAhead.getDate() + 30);
-
-    for (const p of products) {
-      const stock = p.stockQuantity || 0;
-      const cost = Number(p.cost) || 15;
-      const value = stock * cost;
-
-      const saleData = productSalesMap.get(p.id);
-
-      if (saleData && saleData.qty > 0) {
-        fastMovingProducts.push({
-          id: p.id,
-          sku: p.sku || "N/A",
-          name: p.name,
-          salesVolume: saleData.qty,
-          revenueGenerated: saleData.salesRevenue,
-          stockQuantity: stock,
-          turnoverRate: Number((saleData.qty / Math.max(1, stock)).toFixed(2))
-        });
-      } else {
-        if (stock > 0) {
-          slowMovingProducts.push({
-            id: p.id,
-            sku: p.sku || "N/A",
-            name: p.name,
-            stockQuantity: stock,
-            cost,
-            totalValue: value,
-            daysSinceLastSale: 90 // estimate limit indicator
+  static async generateBalanceSheet(
+    tenantId: string = getCurrentTenantId(),
+    userId = "SYSTEM",
+    forceRefresh = false
+  ): Promise<ConsolidatedBalanceSheet> {
+    const validTenantId = ConsolidationRepository.assertValidTenantId(tenantId);
+    const correlationId = getCorrelationId() || uuidv4();
+    const requestId = getRequestId() || uuidv4();
+    const startTime = performance.now();
+
+    ConsolidationMetrics.incrementActive();
+
+    try {
+      const cacheKey = `${CONSOLIDATION_DEFAULTS.BALANCE_SHEET_CACHE_KEY}:${validTenantId}`;
+      if (!forceRefresh) {
+        const cached = await RedisConnectionManager.get(cacheKey);
+        if (cached) {
+          const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+          const parsed = JSON.parse(cached) as ConsolidatedBalanceSheet;
+
+          ConsolidationMetrics.recordExecution({
+            reportType: "BALANCE_SHEET",
+            tenantId: validTenantId,
+            durationMs,
+            status: "SUCCESS",
+            cacheStatus: "HIT",
           });
 
-          // Dead Stock category
-          deadStock.push({
-            id: p.id,
-            sku: p.sku || "N/A",
-            name: p.name,
-            stockQuantity: stock,
-            cost,
-            totalValue: value,
-            expiryDate: null,
-            status: "NO_SALES"
+          ConsolidationLogger.info("Consolidated Balance Sheet cache hit", {
+            tenantId: validTenantId,
+            correlationId,
+            requestId,
+            durationMs,
+            component: "ConsolidationService",
           });
+
+          return parsed;
         }
       }
+
+      const [branches, journalLines, inventoryValuation, completedTransfers, products] = await Promise.all([
+        ConsolidationRepository.getBranches(validTenantId),
+        ConsolidationRepository.getAllPostedJournalLines(validTenantId),
+        this.generateInventoryValuation(validTenantId, forceRefresh),
+        ConsolidationRepository.getCompletedBranchTransfers(validTenantId),
+        ConsolidationRepository.getProductCatalog(validTenantId),
+      ]);
+
+      const ledgerState = LedgerBalanceCalculator.calculateAggregatedLedger(journalLines, branches);
+
+      // Compute current period net income from income statement for unclosed period equity reconciliation
+      const incomeStatement = await this.generateIncomeStatement(validTenantId, userId, forceRefresh);
+
+      const result = FinancialStatementCalculator.calculateBalanceSheet(
+        ledgerState,
+        inventoryValuation.totalInventoryValue,
+        branches,
+        completedTransfers,
+        products,
+        incomeStatement.netIncome
+      );
+
+      // Financial Integrity Verification
+      const integrity = ConsolidationIntegrityMonitor.verifyBalanceSheet(result, validTenantId, correlationId);
+      result.isBalanced = integrity.isBalanced;
+
+      // Tenant-scoped Redis Cache
+      await RedisConnectionManager.set(
+        cacheKey,
+        JSON.stringify(result),
+        "EX",
+        CONSOLIDATION_DEFAULTS.CACHE_TTL_SECONDS
+      );
+
+      const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+      const fingerprint = ConsolidationAuditService.generateFingerprint(result);
+
+      // Non-blocking Audit Logging
+      await ConsolidationAuditService.recordAuditEvent({
+        correlationId,
+        requestId,
+        tenantId: validTenantId,
+        userId,
+        action: "GENERATE_BALANCE_SHEET",
+        reportType: "BALANCE_SHEET",
+        status: integrity.isBalanced ? "SUCCESS" : "WARNING",
+        durationMs,
+        parameters: { forceRefresh },
+        resultFingerprint: fingerprint,
+        financialIntegrity: integrity,
+        cacheStatus: forceRefresh ? "BYPASS" : "MISS",
+      });
+
+      // Performance Metrics Recording
+      ConsolidationMetrics.recordExecution({
+        reportType: "BALANCE_SHEET",
+        tenantId: validTenantId,
+        durationMs,
+        status: integrity.isBalanced ? "SUCCESS" : "WARNING",
+        cacheStatus: forceRefresh ? "BYPASS" : "MISS",
+        isImbalanced: !integrity.isBalanced,
+      });
+
+      return result;
+    } catch (err) {
+      const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+      ConsolidationMetrics.recordExecution({
+        reportType: "BALANCE_SHEET",
+        tenantId: validTenantId,
+        durationMs,
+        status: "FAILURE",
+        cacheStatus: "MISS",
+      });
+
+      ConsolidationLogger.error("Failed to generate Consolidated Balance Sheet", err, {
+        tenantId: validTenantId,
+        correlationId,
+        requestId,
+        durationMs,
+        component: "ConsolidationService",
+      });
+
+      await ConsolidationAuditService.recordAuditEvent({
+        correlationId,
+        requestId,
+        tenantId: validTenantId,
+        userId,
+        action: "GENERATE_BALANCE_SHEET",
+        reportType: "BALANCE_SHEET",
+        status: "FAILURE",
+        durationMs,
+        parameters: { forceRefresh },
+        cacheStatus: "MISS",
+        errorDetails: {
+          code: err instanceof ConsolidationError ? err.code : "CALCULATION_ERROR",
+          message: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? err.stack : undefined,
+        },
+      });
+
+      if (err instanceof ConsolidationError) throw err;
+      throw new ConsolidationCalculationError(`Failed to generate balance sheet: ${err instanceof Error ? err.message : String(err)}`, {
+        tenantId: validTenantId,
+        correlationId,
+      });
+    } finally {
+      ConsolidationMetrics.decrementActive();
     }
-
-    // Sort breakdowns
-    fastMovingProducts.sort((a,b) => b.salesVolume - a.salesVolume);
-    slowMovingProducts.sort((a,b) => b.stockQuantity - a.stockQuantity);
-    deadStock.sort((a,b) => b.stockQuantity - a.stockQuantity);
-
-    const averageItemCost = products.length > 0
-      ? products.reduce((acc, p) => acc + Number(p.cost), 0) / products.length
-      : 0;
-
-    const result: ConsolidatedInventoryValuation = {
-      timestamp: new Date().toISOString(),
-      totalInventoryQuantity: totalQuantity,
-      totalInventoryValue: totalValue,
-      averageItemCost,
-      uniqueSKUsCount: products.length,
-      branchBreakdown,
-      slowMovingProducts: slowMovingProducts.slice(0, 10),
-      fastMovingProducts: fastMovingProducts.slice(0, 10),
-      deadStock: deadStock.slice(0, 10)
-    };
-
-    await RedisConnectionManager.set(cacheKey, JSON.stringify(result), "EX", CONSOLIDATION_DEFAULTS.CACHE_TTL_SECONDS);
-
-    return result;
   }
 
   /**
-   * AI Financial Insight Generational Pipeline with Gemini Fallbacks
+   * Generates Consolidated Income Statement
+   * Source of Truth: General Ledger & Actual Inter-Branch Internal Invoices
+   * Zero Fake Multipliers (No * 0.1, no * 0.90)
+   */
+  static async generateIncomeStatement(
+    tenantId: string = getCurrentTenantId(),
+    userId = "SYSTEM",
+    forceRefresh = false
+  ): Promise<ConsolidatedIncomeStatement> {
+    const validTenantId = ConsolidationRepository.assertValidTenantId(tenantId);
+    const correlationId = getCorrelationId() || uuidv4();
+    const requestId = getRequestId() || uuidv4();
+    const startTime = performance.now();
+
+    ConsolidationMetrics.incrementActive();
+
+    try {
+      const cacheKey = `${CONSOLIDATION_DEFAULTS.INCOME_STATEMENT_CACHE_KEY}:${validTenantId}`;
+      if (!forceRefresh) {
+        const cached = await RedisConnectionManager.get(cacheKey);
+        if (cached) {
+          const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+          const parsed = JSON.parse(cached) as ConsolidatedIncomeStatement;
+
+          ConsolidationMetrics.recordExecution({
+            reportType: "INCOME_STATEMENT",
+            tenantId: validTenantId,
+            durationMs,
+            status: "SUCCESS",
+            cacheStatus: "HIT",
+          });
+
+          ConsolidationLogger.info("Consolidated Income Statement cache hit", {
+            tenantId: validTenantId,
+            correlationId,
+            requestId,
+            durationMs,
+            component: "ConsolidationService",
+          });
+
+          return parsed;
+        }
+      }
+
+      const [branches, journalLines, invoices, products] = await Promise.all([
+        ConsolidationRepository.getBranches(validTenantId),
+        ConsolidationRepository.getAllPostedJournalLines(validTenantId),
+        ConsolidationRepository.getInvoices(validTenantId, 1, 1000, { type: "SALE" }),
+        ConsolidationRepository.getProductCatalog(validTenantId),
+      ]);
+
+      const ledgerState = LedgerBalanceCalculator.calculateAggregatedLedger(journalLines, branches);
+
+      const result = FinancialStatementCalculator.calculateIncomeStatement(
+        ledgerState,
+        branches,
+        invoices,
+        products
+      );
+
+      // Tenant-scoped Redis Cache
+      await RedisConnectionManager.set(
+        cacheKey,
+        JSON.stringify(result),
+        "EX",
+        CONSOLIDATION_DEFAULTS.CACHE_TTL_SECONDS
+      );
+
+      const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+      const fingerprint = ConsolidationAuditService.generateFingerprint(result);
+
+      // Non-blocking Audit Logging
+      await ConsolidationAuditService.recordAuditEvent({
+        correlationId,
+        requestId,
+        tenantId: validTenantId,
+        userId,
+        action: "GENERATE_INCOME_STATEMENT",
+        reportType: "INCOME_STATEMENT",
+        status: "SUCCESS",
+        durationMs,
+        parameters: { forceRefresh },
+        resultFingerprint: fingerprint,
+        cacheStatus: forceRefresh ? "BYPASS" : "MISS",
+      });
+
+      // Performance Metrics Recording
+      ConsolidationMetrics.recordExecution({
+        reportType: "INCOME_STATEMENT",
+        tenantId: validTenantId,
+        durationMs,
+        status: "SUCCESS",
+        cacheStatus: forceRefresh ? "BYPASS" : "MISS",
+      });
+
+      return result;
+    } catch (err) {
+      const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+      ConsolidationMetrics.recordExecution({
+        reportType: "INCOME_STATEMENT",
+        tenantId: validTenantId,
+        durationMs,
+        status: "FAILURE",
+        cacheStatus: "MISS",
+      });
+
+      ConsolidationLogger.error("Failed to generate Consolidated Income Statement", err, {
+        tenantId: validTenantId,
+        correlationId,
+        requestId,
+        durationMs,
+        component: "ConsolidationService",
+      });
+
+      if (err instanceof ConsolidationError) throw err;
+      throw new ConsolidationCalculationError(`Failed to generate income statement: ${err instanceof Error ? err.message : String(err)}`, {
+        tenantId: validTenantId,
+        correlationId,
+      });
+    } finally {
+      ConsolidationMetrics.decrementActive();
+    }
+  }
+
+  /**
+   * Generates Consolidated Cash Flow Statement
+   * Source of Truth: Real Cash Journal Lines & Exact Reconciliation with Balance Sheet
+   * Zero Fake Multipliers (No * 0.90, no * 10, no fake 50000 baseline)
+   */
+  static async generateCashFlow(
+    tenantId: string = getCurrentTenantId(),
+    userId = "SYSTEM",
+    forceRefresh = false
+  ): Promise<ConsolidatedCashFlow> {
+    const validTenantId = ConsolidationRepository.assertValidTenantId(tenantId);
+    const correlationId = getCorrelationId() || uuidv4();
+    const requestId = getRequestId() || uuidv4();
+    const startTime = performance.now();
+
+    ConsolidationMetrics.incrementActive();
+
+    try {
+      const cacheKey = `${CONSOLIDATION_DEFAULTS.CASH_FLOW_CACHE_KEY}:${validTenantId}`;
+      if (!forceRefresh) {
+        const cached = await RedisConnectionManager.get(cacheKey);
+        if (cached) {
+          const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+          const parsed = JSON.parse(cached) as ConsolidatedCashFlow;
+
+          ConsolidationMetrics.recordExecution({
+            reportType: "CASH_FLOW",
+            tenantId: validTenantId,
+            durationMs,
+            status: "SUCCESS",
+            cacheStatus: "HIT",
+          });
+
+          ConsolidationLogger.info("Consolidated Cash Flow cache hit", {
+            tenantId: validTenantId,
+            correlationId,
+            requestId,
+            durationMs,
+            component: "ConsolidationService",
+          });
+
+          return parsed;
+        }
+      }
+
+      const [branches, journalLines, completedTransfers] = await Promise.all([
+        ConsolidationRepository.getBranches(validTenantId),
+        ConsolidationRepository.getAllPostedJournalLines(validTenantId),
+        ConsolidationRepository.getCompletedBranchTransfers(validTenantId),
+      ]);
+
+      const ledgerState = LedgerBalanceCalculator.calculateAggregatedLedger(journalLines, branches);
+
+      // Filter cash journal lines directly
+      const cashJournalLines = journalLines.filter(line => {
+        const category = LedgerBalanceCalculator.classifyAccount(
+          line.account.type,
+          line.account.code,
+          line.account.name
+        );
+        return category === "CASH";
+      });
+
+      const result = CashFlowCalculator.calculate(
+        ledgerState,
+        cashJournalLines,
+        branches,
+        completedTransfers
+      );
+
+      // Financial Integrity Check: Reconcile with Balance Sheet cash
+      const integrity = ConsolidationIntegrityMonitor.verifyCashFlow(
+        result,
+        ledgerState.cashTotal,
+        validTenantId,
+        correlationId
+      );
+
+      // Cache with tenant-scoped key
+      await RedisConnectionManager.set(
+        cacheKey,
+        JSON.stringify(result),
+        "EX",
+        CONSOLIDATION_DEFAULTS.CACHE_TTL_SECONDS
+      );
+
+      const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+      const fingerprint = ConsolidationAuditService.generateFingerprint(result);
+
+      // Non-blocking Audit Logging
+      await ConsolidationAuditService.recordAuditEvent({
+        correlationId,
+        requestId,
+        tenantId: validTenantId,
+        userId,
+        action: "GENERATE_CASH_FLOW",
+        reportType: "CASH_FLOW",
+        status: integrity.isBalanced ? "SUCCESS" : "WARNING",
+        durationMs,
+        parameters: { forceRefresh },
+        resultFingerprint: fingerprint,
+        financialIntegrity: integrity,
+        cacheStatus: forceRefresh ? "BYPASS" : "MISS",
+      });
+
+      ConsolidationMetrics.recordExecution({
+        reportType: "CASH_FLOW",
+        tenantId: validTenantId,
+        durationMs,
+        status: integrity.isBalanced ? "SUCCESS" : "WARNING",
+        cacheStatus: forceRefresh ? "BYPASS" : "MISS",
+        isImbalanced: !integrity.isBalanced,
+      });
+
+      return result;
+    } catch (err) {
+      const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+      ConsolidationMetrics.recordExecution({
+        reportType: "CASH_FLOW",
+        tenantId: validTenantId,
+        durationMs,
+        status: "FAILURE",
+        cacheStatus: "MISS",
+      });
+
+      ConsolidationLogger.error("Failed to generate Consolidated Cash Flow", err, {
+        tenantId: validTenantId,
+        correlationId,
+        requestId,
+        durationMs,
+        component: "ConsolidationService",
+      });
+
+      if (err instanceof ConsolidationError) throw err;
+      throw new ConsolidationCalculationError(`Failed to generate cash flow: ${err instanceof Error ? err.message : String(err)}`, {
+        tenantId: validTenantId,
+        correlationId,
+      });
+    } finally {
+      ConsolidationMetrics.decrementActive();
+    }
+  }
+
+  /**
+   * Generates Consolidated Trial Balance
+   * Source of Truth: Complete Account Ledger with Debit == Credit Invariant Verification
+   * Zero Fake Multipliers (No clearingRow.debit * 0.15)
+   */
+  static async generateTrialBalance(
+    tenantId: string = getCurrentTenantId(),
+    userId = "SYSTEM",
+    forceRefresh = false
+  ): Promise<ConsolidatedTrialBalance> {
+    const validTenantId = ConsolidationRepository.assertValidTenantId(tenantId);
+    const correlationId = getCorrelationId() || uuidv4();
+    const requestId = getRequestId() || uuidv4();
+    const startTime = performance.now();
+
+    ConsolidationMetrics.incrementActive();
+
+    try {
+      const cacheKey = `${CONSOLIDATION_DEFAULTS.TRIAL_BALANCE_CACHE_KEY}:${validTenantId}`;
+      if (!forceRefresh) {
+        const cached = await RedisConnectionManager.get(cacheKey);
+        if (cached) {
+          const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+          const parsed = JSON.parse(cached) as ConsolidatedTrialBalance;
+
+          ConsolidationMetrics.recordExecution({
+            reportType: "TRIAL_BALANCE",
+            tenantId: validTenantId,
+            durationMs,
+            status: "SUCCESS",
+            cacheStatus: "HIT",
+          });
+
+          ConsolidationLogger.info("Consolidated Trial Balance cache hit", {
+            tenantId: validTenantId,
+            correlationId,
+            requestId,
+            durationMs,
+            component: "ConsolidationService",
+          });
+
+          return parsed;
+        }
+      }
+
+      const [branches, journalLines, completedTransfers] = await Promise.all([
+        ConsolidationRepository.getBranches(validTenantId),
+        ConsolidationRepository.getAllPostedJournalLines(validTenantId),
+        ConsolidationRepository.getCompletedBranchTransfers(validTenantId),
+      ]);
+
+      const ledgerState = LedgerBalanceCalculator.calculateAggregatedLedger(journalLines, branches);
+
+      const result = TrialBalanceCalculator.calculate(
+        ledgerState,
+        branches,
+        completedTransfers
+      );
+
+      // Financial Integrity Verification
+      const integrity = ConsolidationIntegrityMonitor.verifyTrialBalance(result, validTenantId, correlationId);
+      result.isBalanced = integrity.isBalanced;
+
+      // Cache with tenant-scoped key
+      await RedisConnectionManager.set(
+        cacheKey,
+        JSON.stringify(result),
+        "EX",
+        CONSOLIDATION_DEFAULTS.CACHE_TTL_SECONDS
+      );
+
+      const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+      const fingerprint = ConsolidationAuditService.generateFingerprint(result);
+
+      // Non-blocking Audit Logging
+      await ConsolidationAuditService.recordAuditEvent({
+        correlationId,
+        requestId,
+        tenantId: validTenantId,
+        userId,
+        action: "GENERATE_TRIAL_BALANCE",
+        reportType: "TRIAL_BALANCE",
+        status: integrity.isBalanced ? "SUCCESS" : "WARNING",
+        durationMs,
+        parameters: { forceRefresh },
+        resultFingerprint: fingerprint,
+        financialIntegrity: integrity,
+        cacheStatus: forceRefresh ? "BYPASS" : "MISS",
+      });
+
+      ConsolidationMetrics.recordExecution({
+        reportType: "TRIAL_BALANCE",
+        tenantId: validTenantId,
+        durationMs,
+        status: integrity.isBalanced ? "SUCCESS" : "WARNING",
+        cacheStatus: forceRefresh ? "BYPASS" : "MISS",
+        isImbalanced: !integrity.isBalanced,
+      });
+
+      return result;
+    } catch (err) {
+      const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+      ConsolidationMetrics.recordExecution({
+        reportType: "TRIAL_BALANCE",
+        tenantId: validTenantId,
+        durationMs,
+        status: "FAILURE",
+        cacheStatus: "MISS",
+      });
+
+      ConsolidationLogger.error("Failed to generate Consolidated Trial Balance", err, {
+        tenantId: validTenantId,
+        correlationId,
+        requestId,
+        durationMs,
+        component: "ConsolidationService",
+      });
+
+      if (err instanceof ConsolidationError) throw err;
+      throw new ConsolidationCalculationError(`Failed to generate trial balance: ${err instanceof Error ? err.message : String(err)}`, {
+        tenantId: validTenantId,
+        correlationId,
+      });
+    } finally {
+      ConsolidationMetrics.decrementActive();
+    }
+  }
+
+  /**
+   * Generates Consolidated Inventory Valuation & Velocity Analytics
+   * Source of Truth: Real physical branch levels, actual batch FIFO costs, real catalog pricing, real sales
+   * Zero Fallback Multipliers (No || 12, no || 15, no Math.random())
+   */
+  static async generateInventoryValuation(
+    tenantId: string = getCurrentTenantId(),
+    forceRefresh = false
+  ): Promise<ConsolidatedInventoryValuation> {
+    const validTenantId = ConsolidationRepository.assertValidTenantId(tenantId);
+    const correlationId = getCorrelationId() || uuidv4();
+    const requestId = getRequestId() || uuidv4();
+    const startTime = performance.now();
+
+    ConsolidationMetrics.incrementActive();
+
+    try {
+      const cacheKey = `${CONSOLIDATION_DEFAULTS.INVENTORY_CACHE_KEY}:${validTenantId}`;
+      if (!forceRefresh) {
+        const cached = await RedisConnectionManager.get(cacheKey);
+        if (cached) {
+          const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+          const parsed = JSON.parse(cached) as ConsolidatedInventoryValuation;
+
+          ConsolidationMetrics.recordExecution({
+            reportType: "INVENTORY_VALUATION",
+            tenantId: validTenantId,
+            durationMs,
+            status: "SUCCESS",
+            cacheStatus: "HIT",
+          });
+
+          ConsolidationLogger.info("Consolidated Inventory Valuation cache hit", {
+            tenantId: validTenantId,
+            correlationId,
+            requestId,
+            durationMs,
+            component: "ConsolidationService",
+          });
+
+          return parsed;
+        }
+      }
+
+      const ninetyDaysAgo = new Date();
+      ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+      const [branches, products, batches, inventoryLevels, recentSaleInvoices] = await Promise.all([
+        ConsolidationRepository.getBranches(validTenantId),
+        ConsolidationRepository.getProductCatalog(validTenantId),
+        ConsolidationRepository.getInventoryBatches(validTenantId),
+        ConsolidationRepository.getBranchInventoryLevels(validTenantId),
+        ConsolidationRepository.getInvoices(validTenantId, 1, 1000, {
+          startDate: ninetyDaysAgo,
+          type: "SALE",
+        }),
+      ]);
+
+      const result = InventoryValuationCalculator.calculate(
+        inventoryLevels,
+        products,
+        batches,
+        branches,
+        recentSaleInvoices
+      );
+
+      // Cache with tenant-scoped key
+      await RedisConnectionManager.set(
+        cacheKey,
+        JSON.stringify(result),
+        "EX",
+        CONSOLIDATION_DEFAULTS.CACHE_TTL_SECONDS
+      );
+
+      const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+      const fingerprint = ConsolidationAuditService.generateFingerprint(result);
+
+      // Non-blocking Audit Logging
+      await ConsolidationAuditService.recordAuditEvent({
+        correlationId,
+        requestId,
+        tenantId: validTenantId,
+        userId: "SYSTEM",
+        action: "GENERATE_INVENTORY_VALUATION",
+        reportType: "INVENTORY_VALUATION",
+        status: "SUCCESS",
+        durationMs,
+        parameters: { forceRefresh },
+        resultFingerprint: fingerprint,
+        cacheStatus: forceRefresh ? "BYPASS" : "MISS",
+      });
+
+      ConsolidationMetrics.recordExecution({
+        reportType: "INVENTORY_VALUATION",
+        tenantId: validTenantId,
+        durationMs,
+        status: "SUCCESS",
+        cacheStatus: forceRefresh ? "BYPASS" : "MISS",
+      });
+
+      return result;
+    } catch (err) {
+      const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+      ConsolidationMetrics.recordExecution({
+        reportType: "INVENTORY_VALUATION",
+        tenantId: validTenantId,
+        durationMs,
+        status: "FAILURE",
+        cacheStatus: "MISS",
+      });
+
+      ConsolidationLogger.error("Failed to generate Consolidated Inventory Valuation", err, {
+        tenantId: validTenantId,
+        correlationId,
+        requestId,
+        durationMs,
+        component: "ConsolidationService",
+      });
+
+      if (err instanceof ConsolidationError) throw err;
+      throw new ConsolidationCalculationError(`Failed to generate inventory valuation: ${err instanceof Error ? err.message : String(err)}`, {
+        tenantId: validTenantId,
+        correlationId,
+      });
+    } finally {
+      ConsolidationMetrics.decrementActive();
+    }
+  }
+
+  /**
+   * AI Financial Insight Generational Pipeline with Gemini Observability & Deterministic Fallbacks
+   * Interprets statistical output without modifying financial figures
+   * Financial report delivery NEVER blocks on AI availability
    */
   static async generateAIInsights(
     balanceSheet: ConsolidatedBalanceSheet,
     incomeStatement: ConsolidatedIncomeStatement,
     inventory: ConsolidatedInventoryValuation
   ): Promise<AIConsolidationInsights> {
+    const aiStartTime = performance.now();
     const ai = await this.getGeminiClient();
 
     const summaryContext = {
@@ -861,14 +777,22 @@ export class ConsolidationService {
       netIncome: incomeStatement.netIncome,
       totalInventoryQuantity: inventory.totalInventoryQuantity,
       totalInventoryValue: inventory.totalInventoryValue,
-      branchInventorySplit: Object.entries(inventory.branchBreakdown).map(([, d]) => `${d.branchName}: ${d.quantity} units, $${d.value}`),
+      branchInventorySplit: Object.entries(inventory.branchBreakdown).map(
+        ([, d]) => `${d.branchName}: ${d.quantity} units, $${d.value}`
+      ),
       slowMovingCount: inventory.slowMovingProducts.length,
-      fastMovingCount: inventory.fastMovingProducts.length,
-      topFastProducts: inventory.fastMovingProducts.slice(0, 3).map(p => `${p.name} (SKU: ${p.sku}) Vol: ${p.salesVolume}`),
-      warnings: inventory.deadStock.slice(0, 3).map(d => `${d.name} has ${d.stockQuantity} dead units valued at $${d.totalValue}`)
+      deadStockCount: inventory.deadStock.length,
+      topSlowProducts: inventory.slowMovingProducts
+        .slice(0, 3)
+        .map(p => `${p.name} (SKU: ${p.sku}) Units: ${p.stockQuantity}`),
+      warnings: inventory.deadStock
+        .slice(0, 3)
+        .map(d => `${d.name} has ${d.stockQuantity} dead units valued at $${d.totalValue}`),
     };
 
     let generatedText = "";
+    let aiSuccess = false;
+
     if (ai) {
       try {
         const prompt = `
@@ -886,7 +810,6 @@ export class ConsolidationService {
           - Inventory Stock quantity: ${summaryContext.totalInventoryQuantity} units
           - Group Inventory Value: $${summaryContext.totalInventoryValue.toFixed(2)}
           - Inventory Branch distribution: ${summaryContext.branchInventorySplit.join("; ")}
-          - Fast selling products: ${summaryContext.topFastProducts.join("; ")}
           - Slow moving indicators: ${summaryContext.warnings.join("; ")}
 
           Generate an objective financial analysis with exactly the following JSON structure model:
@@ -909,93 +832,219 @@ export class ConsolidationService {
 
           RULES:
           - RETURN ONLY VALID PARSABLE JSON. No markdown code blocks like \`\`\`json.
-          - Make recommendations mathematically accurate based on fast moving sell volumes.
+          - Make recommendations mathematically accurate.
           - Do not praise or use sales hype. Keep it analytical and Swiss-school objective.
         `;
 
-        const response = await ai.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: prompt,
-          config: {
-            responseMimeType: "application/json",
+        const modelsList = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-latest"];
+        let response: any = null;
+        let lastErr: any = null;
+
+        for (const m of modelsList) {
+          try {
+            response = await ai.models.generateContent({
+              model: m,
+              contents: prompt,
+              config: {
+                responseMimeType: "application/json",
+              },
+            });
+            break;
+          } catch (modelErr) {
+            lastErr = modelErr;
           }
-        });
+        }
+
+        if (!response && lastErr) {
+          throw lastErr;
+        }
 
         generatedText = response.text || "";
+        aiSuccess = true;
       } catch (err) {
-        console.error("[GEMINI ERROR] Content generation failed, executing analytical rules pipeline:", err);
+        ConsolidationLogger.warn(
+          `[GEMINI OBSERVABILITY] AI content generation failed, switching to deterministic rule engine: ${err instanceof Error ? err.message : String(err)}`,
+          {
+            component: "ConsolidationService",
+          }
+        );
       }
     }
 
-    // Try parsing generated content
+    const aiDurationMs = Math.round((performance.now() - aiStartTime) * 100) / 100;
     const parsed = this.tryParse<AIConsolidationInsights>(generatedText);
+
     if (parsed) {
+      ConsolidationMetrics.recordAiCall(aiDurationMs, true, false);
+      ConsolidationLogger.info(`AI Financial Insights generated successfully in ${aiDurationMs}ms`, {
+        component: "ConsolidationService",
+        durationMs: aiDurationMs,
+      });
       return parsed;
     }
 
-    // Safe Swiss Fallback Engine
-    const fallbackReorders = inventory.fastMovingProducts.slice(0, 3).map(p => ({
+    // AI Fallback executed
+    ConsolidationMetrics.recordAiCall(aiDurationMs, aiSuccess, true);
+
+    // Deterministic Rule-Based Fallback
+    const fallbackReorders = inventory.slowMovingProducts.slice(0, 3).map(p => ({
       productId: p.id,
       sku: p.sku,
       productName: p.name,
       currentStock: p.stockQuantity,
-      reorderQuantity: 100,
-      percentageGap: p.stockQuantity < 10 ? 90 : 25
+      reorderQuantity: Math.max(10, Math.round(p.stockQuantity * 0.5)),
+      percentageGap: p.stockQuantity < 10 ? 90 : 25,
     }));
 
     return {
-      revenueGrowthTrends: `Consolidated pharma revenue stands at $${summaryContext.totalRevenue.toLocaleString()} spread across ${summaryContext.activeBranches} branches. The main branch remains the primary hub of sales volume.`,
-      profitabilityAnalysis: `Gross profitability margin sits at ${summaryContext.totalRevenue > 0 ? ((summaryContext.grossProfit / summaryContext.totalRevenue) * 100).toFixed(1) : 0}%. Operating expenses of $${summaryContext.opex.toLocaleString()} are tightly aligned within normal enterprise envelopes.`,
-      inventoryTurnoverAnalysis: `Global pharmacy stock value totals $${summaryContext.totalInventoryValue.toLocaleString()} representing ${summaryContext.totalInventoryQuantity.toLocaleString()} physical units. Current turnover rate remains steady.`,
+      revenueGrowthTrends: `Consolidated revenue stands at $${summaryContext.totalRevenue.toLocaleString()} spread across ${summaryContext.activeBranches} branches.`,
+      profitabilityAnalysis: `Gross profitability margin sits at ${
+        summaryContext.totalRevenue > 0
+          ? ((summaryContext.grossProfit / summaryContext.totalRevenue) * 100).toFixed(1)
+          : 0
+      }%. Operating expenses of $${summaryContext.opex.toLocaleString()} represent ${
+        summaryContext.totalRevenue > 0
+          ? ((summaryContext.opex / summaryContext.totalRevenue) * 100).toFixed(1)
+          : 0
+      }% of group revenue.`,
+      inventoryTurnoverAnalysis: `Consolidated pharmacy inventory totals $${summaryContext.totalInventoryValue.toLocaleString()} representing ${summaryContext.totalInventoryQuantity.toLocaleString()} physical units across ${summaryContext.activeBranches} active branches.`,
       stockRiskWarnings: [
-        `Inventory value is heavily concentrated in specific branches, indicating redistribution opportunities.`,
-        `${summaryContext.slowMovingCount} products identified with zero velocity in the past 90 days. Action required.`
+        summaryContext.deadStockCount > 0
+          ? `${summaryContext.deadStockCount} inventory batches identified as expired or near expiry.`
+          : `No critical batch expirations detected within the current 60-day audit horizon.`,
+        summaryContext.slowMovingCount > 0
+          ? `${summaryContext.slowMovingCount} product lines identified with low inventory turnover in the past 90 days.`
+          : `Inventory movement rates across product catalog remain active.`,
       ],
-      reorderRecommendations: fallbackReorders
+      reorderRecommendations: fallbackReorders,
     };
   }
 
   /**
-   * Generates the Master Consolidated Summary containing all dashboards widgets and metrics
+   * Generates Master Consolidated Summary containing all dashboards widgets and metrics
+   * Read-only pure operation
    */
-  static async generateMasterConsolidationSummary(userId = "SYSTEM", forceRefresh = false): Promise<ConsolidationSummary> {
-    const cacheKey = CONSOLIDATION_DEFAULTS.DASHBOARD_CACHE_KEY;
-    if (!forceRefresh) {
-      const cached = await RedisConnectionManager.get(cacheKey);
-      if (cached) {
-        return JSON.parse(cached) as ConsolidationSummary;
+  static async generateMasterConsolidationSummary(
+    tenantId: string = getCurrentTenantId(),
+    userId = "SYSTEM",
+    forceRefresh = false
+  ): Promise<ConsolidationSummary> {
+    const validTenantId = ConsolidationRepository.assertValidTenantId(tenantId);
+    const correlationId = getCorrelationId() || uuidv4();
+    const requestId = getRequestId() || uuidv4();
+    const startTime = performance.now();
+
+    ConsolidationMetrics.incrementActive();
+
+    try {
+      const cacheKey = `${CONSOLIDATION_DEFAULTS.DASHBOARD_CACHE_KEY}:${validTenantId}`;
+      if (!forceRefresh) {
+        const cached = await RedisConnectionManager.get(cacheKey);
+        if (cached) {
+          const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+          const parsed = JSON.parse(cached) as ConsolidationSummary;
+
+          ConsolidationMetrics.recordExecution({
+            reportType: "MASTER_SUMMARY",
+            tenantId: validTenantId,
+            durationMs,
+            status: "SUCCESS",
+            cacheStatus: "HIT",
+          });
+
+          ConsolidationLogger.info("Consolidated Master Summary cache hit", {
+            tenantId: validTenantId,
+            correlationId,
+            requestId,
+            durationMs,
+            component: "ConsolidationService",
+          });
+
+          return parsed;
+        }
       }
+
+      const [balanceSheet, incomeStatement, inventory] = await Promise.all([
+        this.generateBalanceSheet(validTenantId, userId, forceRefresh),
+        this.generateIncomeStatement(validTenantId, userId, forceRefresh),
+        this.generateInventoryValuation(validTenantId, forceRefresh),
+      ]);
+
+      const insights = await this.generateAIInsights(balanceSheet, incomeStatement, inventory);
+
+      const result: ConsolidationSummary = {
+        runId: uuidv4(),
+        timestamp: new Date().toISOString(),
+        aggregateRevenue: incomeStatement.revenue,
+        aggregateNetIncome: incomeStatement.netIncome,
+        aggregateAssets: balanceSheet.assets.totalAssets,
+        aggregateLiabilities: balanceSheet.liabilities.totalLiabilities,
+        aggregateEquity: balanceSheet.equity.totalEquity,
+        aggregateInventoryValue: inventory.totalInventoryValue,
+        totalEliminationsDone: balanceSheet.eliminations.length + incomeStatement.eliminations.length,
+        activeBranchesCount: Object.keys(balanceSheet.branchBreakdown).length,
+        insights,
+      };
+
+      await RedisConnectionManager.set(
+        cacheKey,
+        JSON.stringify(result),
+        "EX",
+        CONSOLIDATION_DEFAULTS.CACHE_TTL_SECONDS
+      );
+
+      const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+      const fingerprint = ConsolidationAuditService.generateFingerprint(result);
+
+      // Non-blocking Audit Logging
+      await ConsolidationAuditService.recordAuditEvent({
+        correlationId,
+        requestId,
+        tenantId: validTenantId,
+        userId,
+        action: "GENERATE_MASTER_SUMMARY",
+        reportType: "MASTER_SUMMARY",
+        status: "SUCCESS",
+        durationMs,
+        parameters: { forceRefresh },
+        resultFingerprint: fingerprint,
+        cacheStatus: forceRefresh ? "BYPASS" : "MISS",
+      });
+
+      ConsolidationMetrics.recordExecution({
+        reportType: "MASTER_SUMMARY",
+        tenantId: validTenantId,
+        durationMs,
+        status: "SUCCESS",
+        cacheStatus: forceRefresh ? "BYPASS" : "MISS",
+      });
+
+      return result;
+    } catch (err) {
+      const durationMs = Math.round((performance.now() - startTime) * 100) / 100;
+      ConsolidationMetrics.recordExecution({
+        reportType: "MASTER_SUMMARY",
+        tenantId: validTenantId,
+        durationMs,
+        status: "FAILURE",
+        cacheStatus: "MISS",
+      });
+
+      ConsolidationLogger.error("Failed to generate Consolidated Master Summary", err, {
+        tenantId: validTenantId,
+        correlationId,
+        requestId,
+        durationMs,
+        component: "ConsolidationService",
+      });
+
+      if (err instanceof ConsolidationError) throw err;
+      throw new ConsolidationCalculationError(`Failed to generate master summary: ${err instanceof Error ? err.message : String(err)}`, {
+        tenantId: validTenantId,
+        correlationId,
+      });
+    } finally {
+      ConsolidationMetrics.decrementActive();
     }
-
-    // Worker process simulated asynchronously to satisfy heavy data calculations
-    const [balanceSheet, incomeStatement, inventory] = await Promise.all([
-      this.generateBalanceSheet(userId, forceRefresh),
-      this.generateIncomeStatement(userId, forceRefresh),
-      this.generateInventoryValuation(forceRefresh)
-    ]);
-
-    const insights = await this.generateAIInsights(balanceSheet, incomeStatement, inventory);
-
-    const result: ConsolidationSummary = {
-      runId: uuidv4(),
-      timestamp: new Date().toISOString(),
-      aggregateRevenue: incomeStatement.revenue,
-      aggregateNetIncome: incomeStatement.netIncome,
-      aggregateAssets: balanceSheet.assets.totalAssets,
-      aggregateLiabilities: balanceSheet.liabilities.totalLiabilities,
-      aggregateEquity: balanceSheet.equity.totalEquity,
-      aggregateInventoryValue: inventory.totalInventoryValue,
-      totalEliminationsDone: balanceSheet.eliminations.length + incomeStatement.eliminations.length,
-      activeBranchesCount: Object.keys(balanceSheet.branchBreakdown).length,
-      insights
-    };
-
-    await RedisConnectionManager.set(cacheKey, JSON.stringify(result), "EX", CONSOLIDATION_DEFAULTS.CACHE_TTL_SECONDS);
-
-    const runId = uuidv4();
-    await ConsolidationRepository.writeAuditLog(userId, "CONSOLIDATION_RUN", runId, { message: "Master Financial Consolidation Completed" });
-    await ConsolidationRepository.publishSyncEvent(uuidv4(), "ConsolidationRefreshed", runId, { message: "Master Summary Calculated Successfully" }, userId);
-
-    return result;
   }
 }

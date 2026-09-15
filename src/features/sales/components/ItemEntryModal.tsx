@@ -1,10 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Modal, Button } from '@/components/shared/SharedUI';
 import { db } from '@/core/db';
-import { Package } from 'lucide-react';
+import { WorkflowOrchestrator } from '@/core/workflow';
+import { productApplicationWorkflow } from '@features/catalog/workflows/ProductApplicationWorkflow';
+import { Package, Lock, TrendingUp, Box } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAppStore } from '@/hooks/useAppStore';
-import { normalizeToISODate } from '@/utils/expiryUtils';
+import { normalizeToISODate, getExpiryStatus } from '@/utils/expiryUtils';
+import { priceIntelligenceService } from '@/features/inventory/services/priceIntelligenceService';
 
 interface ProductItem {
   id: string;
@@ -64,7 +67,13 @@ export const ItemEntryModal: React.FC<ItemEntryModalProps> = ({
   const [isConfirmNewProductOpen, setIsConfirmNewProductOpen] = useState<boolean>(false);
   const [isConfirmedNewProduct, setIsConfirmedNewProduct] = useState<boolean>(false);
   
-  // تتبع الارتفاع المتبقي ديناميكياً لتأمين لقطة التطبيق الأصيل
+  // Phase 3.1A - Sales Intelligence State
+  const [availableStock, setAvailableStock] = useState<number | null>(null);
+  const [lastSellingPriceSuggestion, setLastSellingPriceSuggestion] = useState<number | null>(null);
+  const [priceInsight, setPriceInsight] = useState<string>('');
+  const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
+
+  // تتبع الارتفاع المتبقي ديناميكياً للتعامل مع كيبورد الموبايل
   const [isKeyboardUp, setIsKeyboardUp] = useState<boolean>(false);
 
   const { currency } = useAppStore();
@@ -76,7 +85,82 @@ export const ItemEntryModal: React.FC<ItemEntryModalProps> = ({
   const noteInputRef = useRef<HTMLInputElement>(null);
   const categoryInputRef = useRef<HTMLSelectElement>(null);
 
-  // مراقبة الـ Visual Viewport للتعامل مع كيبورد أندرويد كروم بدقة دوت-نت ميكرو
+  // Load live stock, expiry, and price intelligence for the selected product
+  const loadProductIntelligence = useCallback(async (prodId: string, currentProd?: ProductItem) => {
+    if (!prodId) return;
+    try {
+      // 1. Fetch live stock from product master & inventory layers
+      const prod = currentProd || (await db.products.get(prodId)) as ProductItem;
+      let stock = prod?.StockQuantity ?? prod?.stock ?? 0;
+      
+      // Also query available active layers for batches and expiry
+      const layers = await db.inventory_layers.where('product_id').equals(prodId).toArray().catch(() => []);
+      let activeLayers = layers.filter((l: any) => (l.remaining_qty || l.remainingQty || 0) > 0);
+      
+      // In sales mode: Filter out expired layers
+      if (mode === 'sale' && activeLayers.length > 0) {
+        const nonExpiredLayers = activeLayers.filter((l: any) => {
+          const exp = l.expiry_date || l.expiryDate;
+          return !getExpiryStatus(exp).isExpired;
+        });
+        
+        if (nonExpiredLayers.length > 0) {
+          activeLayers = nonExpiredLayers;
+          const layerStock = activeLayers.reduce((sum: number, l: any) => sum + (l.remaining_qty || l.remainingQty || 0), 0);
+          stock = layerStock;
+        } else {
+          // All active layers are expired
+          stock = 0;
+          activeLayers = [];
+        }
+      } else if (activeLayers.length > 0) {
+        const layerStock = activeLayers.reduce((sum: number, l: any) => sum + (l.remaining_qty || l.remainingQty || 0), 0);
+        if (layerStock > 0) stock = layerStock;
+      }
+
+      if (activeLayers.length > 0) {
+        // Find earliest expiry date among active valid batches
+        const sortedBatches = [...activeLayers].sort((a: any, b: any) => {
+          const d1 = new Date(a.expiry_date || a.expiryDate || '9999-12-31').getTime();
+          const d2 = new Date(b.expiry_date || b.expiryDate || '9999-12-31').getTime();
+          return d1 - d2;
+        });
+        const earliestBatch = sortedBatches[0];
+        if (earliestBatch && (earliestBatch.expiry_date || earliestBatch.expiryDate)) {
+          setTempExpiry(normalizeToISODate(earliestBatch.expiry_date || earliestBatch.expiryDate));
+        }
+      } else if (prod?.ExpiryDate || prod?.expiryDate) {
+        const pExp = prod.ExpiryDate || prod.expiryDate;
+        if (mode === 'sale' && getExpiryStatus(pExp).isExpired) {
+          stock = 0;
+          setTempExpiry(normalizeToISODate(pExp));
+        } else {
+          setTempExpiry(normalizeToISODate(pExp));
+        }
+      }
+
+      setAvailableStock(stock);
+
+      // 2. Fetch last actual selling price / price intelligence
+      if (mode === 'sale') {
+        const suggested = await priceIntelligenceService.getSuggestedPrice(prodId, 'SALE');
+        if (suggested?.suggestedPrice && suggested.suggestedPrice > 0) {
+          setLastSellingPriceSuggestion(suggested.suggestedPrice);
+          setPriceInsight(suggested.insight || `آخر سعر بيع: ${suggested.suggestedPrice} ${currency}`);
+          setTempPrice(suggested.suggestedPrice);
+        } else if (prod?.UnitPrice || (prod as any)?.price) {
+          const uPrice = prod.UnitPrice || (prod as any).price || 0;
+          setLastSellingPriceSuggestion(uPrice);
+          setPriceInsight(`سعر البيع الافتراضي: ${uPrice} ${currency}`);
+          setTempPrice(uPrice);
+        }
+      }
+    } catch (err) {
+      console.warn('[ItemEntryModal] Failed to fetch product intelligence:', err);
+    }
+  }, [mode, currency]);
+
+  // مراقبة الـ Visual Viewport للتعامل مع كيبورد أندرويد كروم
   useEffect(() => {
     if (!window.visualViewport) return;
 
@@ -113,15 +197,30 @@ export const ItemEntryModal: React.FC<ItemEntryModalProps> = ({
         setTempExpiry(normalizeToISODate(initialData.expiryDate));
         setTempNote(initialData.note || '');
         setCategoryName(initialData.category || '');
+        const pId = initialData.productId || (initialData.product as any)?.id || null;
+        setSelectedProductId(pId);
+        if (pId) {
+          loadProductIntelligence(pId, initialData.product || undefined);
+        }
       } else {
         resetForm();
       }
       setTimeout(() => itemNameInputRef.current?.focus(), 120);
     }
-  }, [isOpen, initialData]);
+  }, [isOpen, initialData, loadProductIntelligence]);
 
   const resetForm = () => {
-    setManualItemName(''); setTempQty(''); setTempPrice(''); setTempExpiry(''); setTempNote(''); setCategoryName(''); setIsConfirmedNewProduct(false);
+    setManualItemName('');
+    setTempQty('');
+    setTempPrice('');
+    setTempExpiry('');
+    setTempNote('');
+    setCategoryName('');
+    setIsConfirmedNewProduct(false);
+    setAvailableStock(null);
+    setLastSellingPriceSuggestion(null);
+    setPriceInsight('');
+    setSelectedProductId(null);
   };
 
   useEffect(() => {
@@ -143,25 +242,25 @@ export const ItemEntryModal: React.FC<ItemEntryModalProps> = ({
     setManualItemName(p.Name || ''); 
     setCategoryName(p.categoryName || p.category || ''); 
     setTempExpiry(normalizeToISODate(p.ExpiryDate || p.expiryDate || '')); 
+    setSelectedProductId(p.id);
     setShowSearchDropdown(false); 
+    loadProductIntelligence(p.id, p);
     qtyInputRef.current?.focus();
   };
 
   const handleFinalize = async () => {
     if (!manualItemName || !tempQty || !tempPrice) return;
     
-    // محاولة جلب الصنف بطريقة غامضة وحالة عدم الحساسية للحالة (Case-insensitive)
     let existing = await db.products.where('name').equals(manualItemName).first().catch(() => null) ||
                    await db.products.where('Name').equals(manualItemName).first().catch(() => null);
     if (!existing) {
       existing = await db.products.filter(p => ((p.Name || p.name || '')).toLowerCase() === manualItemName.toLowerCase()).first().catch(() => null);
     }
 
-    let finalProductId = existing?.id || null;
+    let finalProductId = selectedProductId || existing?.id || null;
 
-    // في حال وضع البيع وعدم تسجيل المنتج، نسمح بالإضافة كمنتج غير مسجل يدوياً لمنع تجميد المودال
     if (!existing && mode === 'sale') {
-      finalProductId = 'manual-' + Date.now();
+      finalProductId = finalProductId || ('manual-' + Date.now());
     }
 
     if (!existing && mode === 'purchase' && !isConfirmedNewProduct) { 
@@ -181,7 +280,7 @@ export const ItemEntryModal: React.FC<ItemEntryModalProps> = ({
         Is_Active: 1,
         created_at: new Date().toISOString()
       };
-      await db.products.put(newProd); 
+      await WorkflowOrchestrator.execute(productApplicationWorkflow, { product: newProd as any, isNew: true });
       finalProductId = newProd.id;
     }
 
@@ -218,7 +317,7 @@ export const ItemEntryModal: React.FC<ItemEntryModalProps> = ({
       Is_Active: 1, 
       created_at: new Date().toISOString() 
     };
-    await db.products.put(newProd);
+    await WorkflowOrchestrator.execute(productApplicationWorkflow, { product: newProd as any, isNew: true });
     
     onAdd({ 
       id: initialData?.id || Date.now().toString(), 
@@ -249,83 +348,188 @@ export const ItemEntryModal: React.FC<ItemEntryModalProps> = ({
         isCompact={false} 
         noPadding={true} 
         noOuterPadding={true}
-        maxWidth="max-w-[420px] w-[95vw]"
+        maxWidth="max-w-[440px] w-[95vw]"
         transparentContainer={true}
         positionClass="items-center"
       >
         <div 
           dir="rtl" 
-          className="w-full max-w-[420px] mx-auto bg-white rounded-[28px] overflow-hidden flex flex-col box-border p-0 m-0 border-0 shadow-2xl transition-all duration-150 ease-out"
+          className="w-full max-w-[440px] mx-auto bg-white rounded-[28px] overflow-hidden flex flex-col box-border p-0 m-0 border-0 shadow-2xl transition-all duration-150 ease-out font-cairo"
           style={{ 
-            maxHeight: isKeyboardUp ? '52vh' : '88vh', // تقليص الارتفاع بذكاء لمنع التعدي عند ظهور الكيبورد
-            transform: isKeyboardUp ? 'translateY(-4vh)' : 'none' // رفعة خفيفة لتوسيط هندسي ناصع
+            maxHeight: isKeyboardUp ? '56vh' : '90vh',
+            transform: isKeyboardUp ? 'translateY(-4vh)' : 'none'
           }}
         >
           {/* حقل البحث والمطابقة */}
-          <div className="px-3 pt-3 pb-1.5 border-b border-slate-100 flex-shrink-0 w-full box-border">
-            <label className="text-[11px] font-bold text-slate-400 mb-0.5 block text-right">اسم الصنف</label>
+          <div className="px-3.5 pt-3.5 pb-2 border-b border-slate-100 flex-shrink-0 w-full box-border">
+            <label className="text-[11px] font-bold text-slate-400 mb-1 block text-right">اسم الصنف</label>
             <div className="relative w-full box-border">
               <input 
-                ref={itemNameInputRef} value={manualItemName} onChange={e => { setManualItemName(e.target.value); setShowSearchDropdown(true); }} onFocus={() => setShowSearchDropdown(true)}
-                className="w-full box-border h-10 bg-slate-50 border border-slate-200 rounded-xl px-2.5 text-[14px] font-semibold text-[#1E4D4D] outline-none focus:bg-white text-right"
+                ref={itemNameInputRef} 
+                value={manualItemName} 
+                onChange={e => { setManualItemName(e.target.value); setShowSearchDropdown(true); }} 
+                onFocus={() => setShowSearchDropdown(true)}
+                className="w-full box-border h-10 bg-slate-50 border border-slate-200 rounded-xl px-3 text-[14px] font-semibold text-[#1E4D4D] outline-none focus:bg-white text-right"
                 placeholder="ابحث عن صنف أو اكتب اسماً..." 
               />
               <AnimatePresence>
                 {showSearchDropdown && filteredProducts.length > 0 && (
-                  <motion.div initial={{ opacity: 0, y: 3 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 3 }} className="absolute top-full left-0 right-0 bg-white border border-slate-200 rounded-xl shadow-xl z-[100] mt-0.5 max-h-32 overflow-y-auto box-border">
+                  <motion.div 
+                    initial={{ opacity: 0, y: 3 }} 
+                    animate={{ opacity: 1, y: 0 }} 
+                    exit={{ opacity: 0, y: 3 }} 
+                    className="absolute top-full left-0 right-0 bg-white border border-slate-200 rounded-xl shadow-xl z-[100] mt-1 max-h-36 overflow-y-auto box-border"
+                  >
                     {filteredProducts.map(p => (
-                      <button key={p.id} type="button" onClick={() => selectProduct(p)} className="w-full px-3 py-1.5 text-right hover:bg-slate-50 border-b border-slate-50 last:border-0 text-[13px] font-medium text-[#1E4D4D] block font-semibold">
-                        {p.Name}
+                      <button 
+                        key={p.id} 
+                        type="button" 
+                        onClick={() => selectProduct(p)} 
+                        className="w-full px-3 py-2 text-right hover:bg-slate-50 border-b border-slate-50 last:border-0 text-[13px] font-semibold text-[#1E4D4D] flex items-center justify-between"
+                      >
+                        <span>{p.Name}</span>
+                        <span className="text-[11px] font-bold text-slate-400">
+                          رصيد: {p.StockQuantity ?? p.stock ?? 0}
+                        </span>
                       </button>
                     ))}
                   </motion.div>
                 )}
               </AnimatePresence>
             </div>
+
+            {/* شريط ذكاء المنتج للمبيعات (Sales Intelligence Badge) */}
+            {mode === 'sale' && availableStock !== null && (
+              <div className="mt-2 flex items-center justify-between bg-teal-50/80 border border-teal-100 px-2.5 py-1 rounded-lg text-[11px]">
+                <div className="flex items-center gap-1.5 font-bold text-teal-800">
+                  <Box size={13} className="text-teal-600" />
+                  <span>المتوفر بالمخزن:</span>
+                  <span className={`font-black ${availableStock <= 0 ? 'text-red-500' : 'text-teal-900'}`}>
+                    {availableStock}
+                  </span>
+                </div>
+                {lastSellingPriceSuggestion !== null && (
+                  <div className="flex items-center gap-1 text-slate-600 font-bold" title={priceInsight || undefined}>
+                    <TrendingUp size={12} className="text-emerald-600" />
+                    <span>آخر بيع:</span>
+                    <span className="font-mono text-emerald-800 font-bold">{lastSellingPriceSuggestion} {currency}</span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
-          {/* الحقول المدمجة القابلة للتمرير الداخلي في حالة ضيق المساحة المرئية */}
-          <div className="px-3 py-1.5 space-y-2 overflow-y-auto flex-1 box-border w-full min-w-0 scrollbar-none">
-            {/* صف 1: الكمية | الصلاحية */}
-            <div className="grid grid-cols-2 gap-2 w-full min-w-0 box-border">
+          {/* الحقول المدمجة */}
+          <div className="px-3.5 py-2 space-y-2.5 overflow-y-auto flex-1 box-border w-full min-w-0 scrollbar-none">
+            {/* صف 1: الكمية | الصلاحية (Read-only expiry in sales) */}
+            <div className="grid grid-cols-2 gap-2.5 w-full min-w-0 box-border">
               <div className="space-y-0.5 min-w-0">
-                <label className="text-[11px] font-bold text-slate-400 text-right block">الكمية</label>
-                <input ref={qtyInputRef} type="number" value={tempQty} onChange={e => setTempQty(e.target.value)} onKeyDown={e => e.key === 'Enter' && expiryInputRef.current?.focus()} className="w-full box-border h-10 bg-slate-50 border border-slate-200 rounded-xl px-2 text-center text-[14px] font-semibold text-[#1E4D4D] outline-none" placeholder="0" />
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-bold text-slate-400 text-right block">الكمية المطلوبة</label>
+                  {availableStock !== null && mode === 'sale' && (
+                    <span className="text-[10px] font-bold text-slate-400">متاح ({availableStock})</span>
+                  )}
+                </div>
+                <input 
+                  ref={qtyInputRef} 
+                  type="number" 
+                  value={tempQty} 
+                  onChange={e => setTempQty(e.target.value)} 
+                  onKeyDown={e => e.key === 'Enter' && (mode === 'sale' ? priceInputRef.current?.focus() : expiryInputRef.current?.focus())} 
+                  className={`w-full box-border h-10 bg-slate-50 border rounded-xl px-2 text-center text-[14px] font-semibold text-[#1E4D4D] outline-none ${
+                    mode === 'sale' && availableStock !== null && Number(tempQty) > availableStock
+                      ? 'border-red-400 bg-red-50 text-red-600' 
+                      : 'border-slate-200'
+                  }`} 
+                  placeholder="0" 
+                />
               </div>
+
               <div className="space-y-0.5 min-w-0">
-                <label className="text-[11px] font-bold text-slate-400 text-right block">تاريخ الصلاحية</label>
-                <input ref={expiryInputRef} type="date" disabled={mode === 'sale'} readOnly={mode === 'sale'} value={tempExpiry} onChange={e => setTempExpiry(e.target.value)} onKeyDown={e => e.key === 'Enter' && priceInputRef.current?.focus()} className={`w-full box-border h-10 bg-slate-50 border border-slate-200 rounded-xl px-2 text-[14px] font-semibold text-[#1E4D4D] outline-none text-right appearance-none ${mode === 'sale' ? 'opacity-60 bg-slate-100' : ''}`} />
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-bold text-slate-400 text-right block">تاريخ الصلاحية</label>
+                  {mode === 'sale' && (
+                    <span className="text-[10px] text-teal-700 font-bold flex items-center gap-0.5">
+                      <Lock size={10} /> نظامي
+                    </span>
+                  )}
+                </div>
+                <input 
+                  ref={expiryInputRef} 
+                  type="date" 
+                  disabled={mode === 'sale'} 
+                  readOnly={mode === 'sale'} 
+                  value={tempExpiry} 
+                  onChange={e => setTempExpiry(e.target.value)} 
+                  onKeyDown={e => e.key === 'Enter' && priceInputRef.current?.focus()} 
+                  className={`w-full box-border h-10 border border-slate-200 rounded-xl px-2 text-[13px] font-semibold text-[#1E4D4D] outline-none text-right appearance-none ${
+                    mode === 'sale' ? 'bg-slate-100/80 cursor-not-allowed opacity-85' : 'bg-slate-50'
+                  }`} 
+                />
               </div>
             </div>
 
             {/* صف 2: السعر | التصنيف */}
-            <div className="grid grid-cols-2 gap-2 w-full min-w-0 box-border">
+            <div className="grid grid-cols-2 gap-2.5 w-full min-w-0 box-border">
               <div className="space-y-0.5 min-w-0">
-                <label className="text-[11px] font-bold text-slate-400 text-right block">{mode === 'purchase' ? 'سعر الشراء' : 'سعر البيع'}</label>
-                <input ref={priceInputRef} type="number" step="any" value={tempPrice} onChange={e => setTempPrice(e.target.value)} onKeyDown={e => e.key === 'Enter' && categoryInputRef.current?.focus()} className="w-full box-border h-10 bg-slate-50 border border-slate-200 rounded-xl px-2 text-center text-[14px] font-semibold text-[#1E4D4D] outline-none" placeholder="0.00" />
+                <label className="text-[11px] font-bold text-slate-400 text-right block">
+                  {mode === 'purchase' ? 'سعر الشراء' : 'سعر البيع'}
+                </label>
+                <input 
+                  ref={priceInputRef} 
+                  type="number" 
+                  step="any" 
+                  value={tempPrice} 
+                  onChange={e => setTempPrice(e.target.value)} 
+                  onKeyDown={e => e.key === 'Enter' && (mode === 'sale' ? noteInputRef.current?.focus() : categoryInputRef.current?.focus())} 
+                  className="w-full box-border h-10 bg-slate-50 border border-slate-200 rounded-xl px-2 text-center text-[14px] font-semibold text-[#1E4D4D] outline-none" 
+                  placeholder="0.00" 
+                />
               </div>
+
               <div className="space-y-0.5 min-w-0">
                 <label className="text-[11px] font-bold text-slate-400 text-right block">التصنيف</label>
-                <select ref={categoryInputRef} disabled={mode === 'sale'} value={categoryName} onChange={e => setCategoryName(e.target.value)} onKeyDown={e => e.key === 'Enter' && noteInputRef.current?.focus()} className="w-full box-border h-10 bg-slate-50 border border-slate-200 rounded-xl px-2 text-[14px] font-semibold text-[#1E4D4D] outline-none text-right appearance-none">
+                <select 
+                  ref={categoryInputRef} 
+                  disabled={mode === 'sale'} 
+                  value={categoryName} 
+                  onChange={e => setCategoryName(e.target.value)} 
+                  onKeyDown={e => e.key === 'Enter' && noteInputRef.current?.focus()} 
+                  className={`w-full box-border h-10 border border-slate-200 rounded-xl px-2 text-[13px] font-semibold text-[#1E4D4D] outline-none text-right appearance-none ${
+                    mode === 'sale' ? 'bg-slate-100/80 cursor-not-allowed opacity-85' : 'bg-slate-50'
+                  }`}
+                >
                   <option value="">{mode === 'sale' ? categoryName || 'عام' : 'اختر تصنيفاً...'}</option>
-                  {['أدوية', 'مستلزمات طبية', 'مستحضر تجميلي', 'مكملات غذائية', 'أجهزة طبية', 'مواد استهلاكية', 'أصناف أخرى'].map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                  {['أدوية', 'مستلزمات طبية', 'مستحضر تجميلي', 'مكملات غذائية', 'أجهزة طبية', 'مواد استهلاكية', 'أصناف أخرى'].map(cat => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
                 </select>
               </div>
             </div>
 
             {/* شريط الإجمالي المحسوب كبسولة مدمجة */}
-            <div className="w-full box-border h-8 bg-emerald-50 border border-emerald-100 rounded-xl flex items-center justify-center flex-shrink-0">
-              <span className="text-[12px] font-black text-emerald-800">الإجمالي: {((parseFloat(tempQty as string) || 0) * (parseFloat(tempPrice as string) || 0)).toLocaleString()} {currency}</span>
+            <div className="w-full box-border h-9 bg-emerald-50 border border-emerald-100 rounded-xl flex items-center justify-between px-3.5 flex-shrink-0">
+              <span className="text-[11px] font-bold text-emerald-700">إجمالي البند:</span>
+              <span className="text-[13px] font-black text-emerald-900">
+                {((parseFloat(tempQty as string) || 0) * (parseFloat(tempPrice as string) || 0)).toLocaleString()} {currency}
+              </span>
             </div>
 
             {/* حقل الملاحظة الموفر للمساحة */}
             <div className="w-full box-border">
-              <input ref={noteInputRef} value={tempNote} onChange={e => setTempNote(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleFinalize()} className="w-full box-border h-10 bg-slate-50 border border-slate-200 rounded-xl px-2.5 text-[14px] font-semibold text-[#1E4D4D] outline-none focus:bg-white text-right" placeholder="أضف ملاحظة هنا..." />
+              <input 
+                ref={noteInputRef} 
+                value={tempNote} 
+                onChange={e => setTempNote(e.target.value)} 
+                onKeyDown={e => e.key === 'Enter' && handleFinalize()} 
+                className="w-full box-border h-10 bg-slate-50 border border-slate-200 rounded-xl px-3 text-[13px] font-semibold text-[#1E4D4D] outline-none focus:bg-white text-right" 
+                placeholder="أضف ملاحظة هنا (اختياري)..." 
+              />
             </div>
           </div>
 
-          {/* الأزرار الأساسية محاذية وملتصقة بالأسفل تماماً لمنع أي قص */}
-          <div className="flex gap-2 px-3 pt-1.5 pb-2 border-t border-slate-100 flex-nowrap w-full box-border bg-white flex-shrink-0 m-0">
+          {/* الأزرار الأساسية */}
+          <div className="flex gap-2 px-3.5 pt-2 pb-3 border-t border-slate-100 flex-nowrap w-full box-border bg-white flex-shrink-0 m-0">
             <Button className="flex-[2] !h-10 !rounded-xl !text-[14px] font-bold" variant="primary" onClick={handleFinalize}>
               {initialData ? 'تعديل الصنف' : 'إضافة الصنف'}
             </Button>
@@ -336,14 +540,25 @@ export const ItemEntryModal: React.FC<ItemEntryModalProps> = ({
         </div>
       </Modal>
 
-      {/* نافذة التأكيد */}
+      {/* نافذة التأكيد للمشتريات */}
       <Modal isOpen={isConfirmNewProductOpen} onClose={() => setIsConfirmNewProductOpen(false)} title="" maxWidth="max-w-[320px] w-[90vw]" noPadding={true} showCloseButton={false} positionClass="items-center">
-        <div dir="rtl" className="p-4 text-center space-y-3 bg-white rounded-2xl box-border w-full">
-          <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center mx-auto text-emerald-600"><Package size={24} /></div>
-          <div className="space-y-1"><h3 className="text-[15px] font-black text-[#1E4D4D]">صنف غير مسجل!</h3><p className="text-[12px] font-medium text-slate-500 leading-relaxed">هل ترغب في تسجيل <span className="text-[#1E4D4D] font-bold underline">{manualItemName}</span> كمنتج جديد؟</p></div>
+        <div dir="rtl" className="p-4 text-center space-y-3 bg-white rounded-2xl box-border w-full font-cairo">
+          <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center mx-auto text-emerald-600">
+            <Package size={24} />
+          </div>
+          <div className="space-y-1">
+            <h3 className="text-[15px] font-black text-[#1E4D4D]">صنف غير مسجل!</h3>
+            <p className="text-[12px] font-medium text-slate-500 leading-relaxed">
+              هل ترغب في تسجيل <span className="text-[#1E4D4D] font-bold underline">{manualItemName}</span> كمنتج جديد في المخزون؟
+            </p>
+          </div>
           <div className="flex gap-2 pt-1 box-border">
-            <button type="button" onClick={handleConfirmRegister} className="flex-[2] h-10 bg-[#1E4D4D] text-white rounded-xl text-[13px] font-bold">نعم، سجل الآن</button>
-            <button type="button" onClick={() => setIsConfirmNewProductOpen(false)} className="flex-1 h-10 bg-slate-100 text-slate-600 rounded-xl text-[13px] font-bold">إلغاء</button>
+            <button type="button" onClick={handleConfirmRegister} className="flex-[2] h-10 bg-[#1E4D4D] text-white rounded-xl text-[13px] font-bold active:scale-95 transition-all">
+              نعم، سجل الآن
+            </button>
+            <button type="button" onClick={() => setIsConfirmNewProductOpen(false)} className="flex-1 h-10 bg-slate-100 text-slate-600 rounded-xl text-[13px] font-bold active:scale-95 transition-all">
+              إلغاء
+            </button>
           </div>
         </div>
       </Modal>

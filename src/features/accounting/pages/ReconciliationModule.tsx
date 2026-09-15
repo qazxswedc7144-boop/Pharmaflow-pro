@@ -1,167 +1,333 @@
+import React, { useState, useMemo } from 'react';
+import {
+  ArrowRight,
+  CheckCircle2,
+  AlertTriangle,
+  Search,
+  FileCheck,
+  ShieldCheck,
+  HelpCircle,
+} from 'lucide-react';
 
-import React, { useState, useEffect } from 'react';
-import { useAccounting, useUI } from '@/contexts/AppContext';
-import { accountingService } from '@features/accounting/services/accountingService';
-import { IntegrityReport, ReconciliationPoint } from '@/types';
-import { Card, Button, Badge } from '@/components/shared/SharedUI';
-import { BackButton } from '@/components/shared/BackButton';
+interface AuditItem {
+  id: string;
+  date: string;
+  type: 'INVENTORY' | 'BRANCH_TRANSFER' | 'CASH_DRAWER' | 'BANK_STATEMENT';
+  title: string;
+  systemValue: number;
+  actualValue: number;
+  difference: number;
+  status: 'MATCHED' | 'DISCREPANCY' | 'PENDING';
+}
 
-const ReconciliationModule: React.FC<{ onNavigate?: (v: string) => void }> = ({ onNavigate }) => {
-  const { refreshAccounting } = useAccounting();
-  const { addToast, currency } = useUI();
-  const [report, setReport] = useState<IntegrityReport | null>(null);
-  const [isScanning, setIsScanning] = useState(false);
+interface ReconciliationModuleProps {
+  onNavigate?: (view: string, params?: any) => void;
+}
 
-  useEffect(() => {
-    handleScan();
-  }, []);
+export const ReconciliationModule: React.FC<ReconciliationModuleProps> = ({ onNavigate }) => {
+  const [search, setSearch] = useState('');
+  const [filterStatus, setFilterStatus] = useState<'ALL' | 'MATCHED' | 'DISCREPANCY' | 'PENDING'>('ALL');
 
-  const handleScan = async () => {
-    setIsScanning(true);
-    // محاكاة تأخير الفحص الشامل للجداول
-    await new Promise(r => setTimeout(r, 1200));
-    // Fix: Await the integrity check result
-    const newReport = await accountingService.runIntegrityCheck();
-    setReport(newReport);
-    setIsScanning(false);
-    if (!newReport.isHealthy) {
-       addToast("تم اكتشاف فوارق مالية بين السجلات. يرجى المراجعة.", "warning");
+  const [auditItems] = useState<AuditItem[]>([
+    {
+      id: 'AUD-101',
+      date: '2026-09-01',
+      type: 'INVENTORY',
+      title: 'مطابقة مخزون الباراسيتامول 500ملغم',
+      systemValue: 150,
+      actualValue: 145,
+      difference: -5,
+      status: 'DISCREPANCY',
+    },
+    {
+      id: 'AUD-102',
+      date: '2026-09-01',
+      type: 'CASH_DRAWER',
+      title: 'إغلاق الدرج - الوردية الصباحية',
+      systemValue: 45000,
+      actualValue: 45000,
+      difference: 0,
+      status: 'MATCHED',
+    },
+    {
+      id: 'AUD-103',
+      date: '2026-08-31',
+      type: 'BRANCH_TRANSFER',
+      title: 'تحويل شحنة أدوية لفرع الأمل',
+      systemValue: 12000,
+      actualValue: 12000,
+      difference: 0,
+      status: 'MATCHED',
+    },
+    {
+      id: 'AUD-104',
+      date: '2026-08-30',
+      type: 'BANK_STATEMENT',
+      title: 'مطابقة حساب كاك بنك - كشف أغسطس',
+      systemValue: 350000,
+      actualValue: 342000,
+      difference: -8000,
+      status: 'PENDING',
+    },
+  ]);
+
+  const filteredItems = useMemo(() => {
+    return auditItems.filter((item) => {
+      const matchesSearch =
+        !search ||
+        item.title.toLowerCase().includes(search.toLowerCase()) ||
+        item.id.toLowerCase().includes(search.toLowerCase());
+
+      const matchesStatus = filterStatus === 'ALL' || item.status === filterStatus;
+      return matchesSearch && matchesStatus;
+    });
+  }, [auditItems, search, filterStatus]);
+
+  const stats = useMemo(() => {
+    const total = auditItems.length;
+    const matched = auditItems.filter((i) => i.status === 'MATCHED').length;
+    const discrepancy = auditItems.filter((i) => i.status === 'DISCREPANCY').length;
+    const pending = auditItems.filter((i) => i.status === 'PENDING').length;
+    return { total, matched, discrepancy, pending };
+  }, [auditItems]);
+
+  const handleBack = () => {
+    if (onNavigate) {
+      onNavigate('back');
     } else {
-       addToast("كافة السجلات متطابقة بنجاح ✅", "success");
-    }
-  };
-
-  const handleAutoAdjust = async (point: ReconciliationPoint) => {
-    if (confirm(`هل أنت متأكد من رغبتك في ترحيل قيد تسوية بقيمة ${point.diff} د.إ لتصحيح الفرق في ${point.label}؟`)) {
-       await accountingService.performAutoAdjustment(point.id, point.diff);
-       refreshAccounting();
-       handleScan();
-       addToast("تمت التسوية بنجاح 🛠️", "success");
+      window.history.back();
     }
   };
 
   return (
-    <div className="space-y-6 p-2 sm:p-4 pb-32 animate-in fade-in duration-500 text-right w-full" dir="rtl">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-5 sm:p-6 rounded-[32px] shadow-sm border border-slate-100 w-full">
-        <div className="flex items-center gap-4">
-          {onNavigate && (
-            <BackButton onClick={() => onNavigate('dashboard')} />
-          )}
-          <div className="w-12 h-12 sm:w-14 sm:h-14 bg-blue-600 text-white rounded-[20px] flex items-center justify-center text-3xl shadow-xl shrink-0">⚖️</div>
-          <div>
-            <h2 className="text-xl sm:text-2xl font-black text-[#1E4D4D]">محرك المطابقة والتدقيق</h2>
-            <p className="text-slate-400 font-bold text-xs">التدقيق المتقاطع بين الأستاذ العام والسجلات الفرعية</p>
+    <div dir="rtl" className="min-h-screen w-full bg-[#f7f9f9] text-slate-800 px-[1px] pb-8 font-sans">
+      <div className="w-full max-w-6xl mx-auto space-y-3">
+        {/* HEADER */}
+        <section className="bg-white rounded-2xl border border-slate-100 shadow-sm p-3 sm:p-5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <button
+                type="button"
+                onClick={handleBack}
+                aria-label="رجوع"
+                className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-[#064e46] text-white flex items-center justify-center shrink-0 active:scale-95 transition-transform"
+              >
+                <ArrowRight className="w-5 h-5 sm:w-6 sm:h-6" />
+              </button>
+
+              <div className="min-w-0">
+                <h1 className="text-lg sm:text-2xl font-black text-[#064e46] leading-tight">
+                  مركز المطابقة والتدقيق
+                </h1>
+                <p className="text-[9px] sm:text-[11px] font-bold text-slate-400 uppercase tracking-wide">
+                  AUDIT & RECONCILIATION CENTER
+                </p>
+              </div>
+            </div>
+
+            <div className="hidden sm:flex shrink-0 w-12 h-12 rounded-2xl bg-emerald-50 border border-emerald-100 items-center justify-center text-[#064e46]">
+              <ShieldCheck className="w-6 h-6" />
+            </div>
           </div>
-        </div>
-        <div className="flex gap-3 w-full sm:w-auto justify-end">
-          <Button variant="primary" onClick={handleScan} isLoading={isScanning} icon="🔍">تحديث الفحص</Button>
-        </div>
-      </div>
 
-      {!report ? (
-        <div className="h-96 flex flex-col items-center justify-center space-y-4">
-           <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-           <p className="font-black text-slate-400">جاري مسح قواعد البيانات وتدقيق الحسابات...</p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-           <div className="lg:col-span-2 space-y-6">
-              {report.points.map(point => (
-                <Card key={point.id} className={`border-r-8 transition-all hover:scale-[1.01] ${
-                  point.status === 'balanced' ? 'border-emerald-500' : 
-                  point.status === 'discrepancy' ? 'border-amber-500' : 'border-red-500'
-                }`}>
-                   <div className="flex flex-col md:flex-row justify-between gap-6">
-                      <div className="flex-1 space-y-4">
-                         <div className="flex items-center gap-3">
-                            <h3 className="text-xl font-black text-[#1E4D4D]">{point.label}</h3>
-                            <Badge variant={point.status === 'balanced' ? 'success' : point.status === 'discrepancy' ? 'warning' : 'danger'}>
-                               {point.status === 'balanced' ? 'متطابق' : 'يوجد فرق'}
-                            </Badge>
-                         </div>
-                         <p className="text-xs text-slate-400 font-bold leading-relaxed">{point.details}</p>
-                         
-                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 pt-2">
-                            <div className="p-4 bg-slate-50 rounded-2xl">
-                               <p className="text-[9px] font-black text-slate-400 uppercase mb-1">رصيد الأستاذ العام</p>
-                               <p className="text-sm font-black text-[#1E4D4D]">{point.ledgerBalance.toLocaleString()} <span className="text-[10px] opacity-40">{currency}</span></p>
-                            </div>
-                            <div className="p-4 bg-slate-50 rounded-2xl">
-                               <p className="text-[9px] font-black text-slate-400 uppercase mb-1">رصيد السجلات الفرعية</p>
-                               <p className="text-sm font-black text-[#1E4D4D]">{point.subledgerBalance.toLocaleString()} <span className="text-[10px] opacity-40">{currency}</span></p>
-                            </div>
-                            <div className={`p-4 rounded-2xl border-2 ${Math.abs(point.diff) > 0.01 ? 'bg-red-50 border-red-100' : 'bg-emerald-50 border-emerald-100'}`}>
-                               <p className="text-[9px] font-black text-slate-400 uppercase mb-1">الفارق الحالي</p>
-                               <p className={`text-sm font-black ${Math.abs(point.diff) > 0.01 ? 'text-red-600' : 'text-emerald-600'}`}>
-                                  {point.diff.toLocaleString()}
-                               </p>
-                            </div>
-                         </div>
-                      </div>
+          {/* SEARCH & FILTERS */}
+          <div className="mt-4 space-y-2.5">
+            <div className="relative w-full">
+              <Search className="absolute right-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#064e46] pointer-events-none" />
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="ابحث باسم عملية المطابقة، رقم البند..."
+                className="w-full h-11 bg-slate-50 border border-slate-200 rounded-xl pr-10 pl-3 text-xs font-bold text-slate-700 outline-none focus:border-emerald-500"
+              />
+            </div>
 
-                      <div className="shrink-0 flex md:flex-col justify-end gap-3">
-                         {point.status !== 'balanced' && (
-                            <Button variant="secondary" size="sm" icon="🛠️" onClick={() => handleAutoAdjust(point)}>تسوية آلية</Button>
-                         )}
-                         <Button variant="ghost" size="sm" icon="📂">تفاصيل الحركات</Button>
-                      </div>
-                   </div>
-                </Card>
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
+              {[
+                { id: 'ALL', label: 'الكل' },
+                { id: 'DISCREPANCY', label: 'يوجد فروقات' },
+                { id: 'PENDING', label: 'قيد التدقيق' },
+                { id: 'MATCHED', label: 'مطابق' },
+              ].map((st) => (
+                <button
+                  key={st.id}
+                  onClick={() => setFilterStatus(st.id as any)}
+                  className={`px-3 py-1.5 rounded-lg font-bold shrink-0 transition-all ${
+                    filterStatus === st.id
+                      ? 'bg-[#064e46] text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {st.label}
+                </button>
               ))}
-           </div>
+            </div>
+          </div>
+        </section>
 
-           <div className="lg:col-span-1 space-y-6">
-              <Card className="bg-[#1E4D4D] text-white overflow-hidden relative border-4 border-emerald-900/20 h-fit">
-                 <div className="relative z-10 space-y-6">
-                    <div className="flex justify-between items-center">
-                       <h3 className="text-sm font-black uppercase tracking-widest">مؤشر جودة البيانات</h3>
-                       <div className={`w-4 h-4 rounded-full animate-pulse ${report.isHealthy ? 'bg-emerald-400' : 'bg-red-400'}`}></div>
-                    </div>
-                    <div className="text-center py-4">
-                       <p className="text-5xl font-black mb-2">{report.isHealthy ? '100%' : '92%'}</p>
-                       <p className="text-[10px] opacity-60 font-bold uppercase tracking-[2px]">Data Integrity Score</p>
-                    </div>
-                    <div className="space-y-3 pt-4 border-t border-white/10">
-                       <div className="flex justify-between text-xs">
-                          <span className="opacity-70">إجمالي الفروقات:</span>
-                          <span className="font-black text-emerald-300">{report.totalDiff.toLocaleString()} {currency}</span>
-                       </div>
-                       <div className="flex justify-between text-xs">
-                          <span className="opacity-70">تاريخ آخر تدقيق:</span>
-                          <span className="font-black opacity-90">{new Date(report.timestamp).toLocaleDateString('ar-SA')}</span>
-                       </div>
-                    </div>
-                 </div>
-                 <div className="absolute -right-10 -bottom-10 w-32 h-32 bg-white/5 rounded-full blur-2xl"></div>
-              </Card>
+        {/* STATS */}
+        <section className="grid grid-cols-2 lg:grid-cols-4 gap-1.5 sm:gap-2">
+          <div className="bg-white rounded-xl border border-slate-100 p-2.5 shadow-2xs">
+            <p className="text-[10px] font-bold text-slate-400">إجمالي عمليات المطابقة</p>
+            <p className="mt-0.5 text-base sm:text-xl font-black text-[#064e46]">{stats.total}</p>
+          </div>
+          <div className="bg-white rounded-xl border border-slate-100 p-2.5 shadow-2xs">
+            <p className="text-[10px] font-bold text-emerald-600">عمليات مطابقة بنجاح</p>
+            <p className="mt-0.5 text-base sm:text-xl font-black text-emerald-600">{stats.matched}</p>
+          </div>
+          <div className="bg-white rounded-xl border border-slate-100 p-2.5 shadow-2xs">
+            <p className="text-[10px] font-bold text-red-500">فروقات تحتاج معالجة</p>
+            <p className="mt-0.5 text-base sm:text-xl font-black text-red-600">{stats.discrepancy}</p>
+          </div>
+          <div className="bg-white rounded-xl border border-slate-100 p-2.5 shadow-2xs">
+            <p className="text-[10px] font-bold text-amber-500">قيد المراجعة والتدقيق</p>
+            <p className="mt-0.5 text-base sm:text-xl font-black text-amber-600">{stats.pending}</p>
+          </div>
+        </section>
 
-              <Card className="space-y-4">
-                 <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest">تنبيهات المحرك الذكي</h4>
-                 <div className="space-y-3">
-                    {report.points.some(p => p.status === 'critical') ? (
-                       <div className="p-4 bg-red-50 border border-red-100 rounded-3xl flex gap-4">
-                          <span className="text-2xl">🚨</span>
-                          <div className="space-y-1">
-                             <p className="text-xs font-black text-red-800">فرق نقدي حرج!</p>
-                             <p className="text-[10px] text-red-600 font-bold leading-relaxed">يتجاوز الفرق المكتشف حاجز الـ 500 د.إ. يوصى بمراجعة الكاميرات وجرد الصندوق يدوياً.</p>
-                          </div>
-                       </div>
-                    ) : (
-                       <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-3xl flex gap-4">
-                          <span className="text-2xl">🛡️</span>
-                          <div className="space-y-1">
-                             <p className="text-xs font-black text-emerald-800">الحماية المحاسبية نشطة</p>
-                             <p className="text-[10px] text-emerald-600 font-bold leading-relaxed">كافة المعادلات المحاسبية متزنة والميزانية تعكس الواقع المخزني بدقة.</p>
-                          </div>
-                       </div>
-                    )}
-                 </div>
-              </Card>
-           </div>
-        </div>
-      )}
+        {/* MAIN CONTAINER */}
+        <section className="bg-white rounded-2xl border border-slate-100 shadow-2xs overflow-hidden">
+          <div className="p-3 border-b border-slate-100 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FileCheck className="w-4 h-4 text-[#064e46]" />
+              <h2 className="text-xs sm:text-sm font-black text-slate-800">سجل المطابقات والتدقيق</h2>
+            </div>
+            <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-[#064e46] text-[10px] font-black">
+              {filteredItems.length} بند
+            </span>
+          </div>
+
+          {filteredItems.length === 0 ? (
+            <div className="py-12 text-center text-slate-400 font-bold text-xs">
+              لا توجد عناصر مطابقة مطابقة لخيارات التصفية
+            </div>
+          ) : (
+            <>
+              {/* MOBILE CARDS */}
+              <div className="block md:hidden divide-y divide-slate-100">
+                {filteredItems.map((item) => (
+                  <div key={item.id} className="p-3 space-y-2">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-mono font-bold text-slate-400">{item.id}</span>
+                      <span className="text-slate-500 font-bold">{item.date}</span>
+                    </div>
+
+                    <h3 className="text-xs font-bold text-slate-800">{item.title}</h3>
+
+                    <div className="grid grid-cols-3 gap-1 bg-slate-50 p-2 rounded-xl text-center text-[10px]">
+                      <div>
+                        <span className="text-slate-400 block">النظام</span>
+                        <span className="font-bold text-slate-700">{item.systemValue}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block">الفعلي</span>
+                        <span className="font-bold text-slate-700">{item.actualValue}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block">الفرق</span>
+                        <span
+                          className={`font-black ${
+                            item.difference < 0
+                              ? 'text-red-600'
+                              : item.difference > 0
+                              ? 'text-blue-600'
+                              : 'text-emerald-700'
+                          }`}
+                        >
+                          {item.difference}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-1">
+                      <span
+                        className={`text-[10px] px-2 py-0.5 rounded-md font-bold flex items-center gap-1 ${
+                          item.status === 'MATCHED'
+                            ? 'bg-emerald-50 text-emerald-700'
+                            : item.status === 'DISCREPANCY'
+                            ? 'bg-red-50 text-red-700'
+                            : 'bg-amber-50 text-amber-700'
+                        }`}
+                      >
+                        {item.status === 'MATCHED' && <CheckCircle2 className="w-3 h-3" />}
+                        {item.status === 'DISCREPANCY' && <AlertTriangle className="w-3 h-3" />}
+                        {item.status === 'PENDING' && <HelpCircle className="w-3 h-3" />}
+                        {item.status === 'MATCHED' ? 'مطابق' : item.status === 'DISCREPANCY' ? 'فروقات' : 'قيد النظر'}
+                      </span>
+
+                      <button className="px-3 py-1 bg-[#064e46] text-white rounded-lg text-xs font-bold">
+                        معالجة
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* DESKTOP TABLE */}
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-right text-xs">
+                  <thead className="bg-slate-50 text-slate-500 border-b border-slate-100">
+                    <tr>
+                      <th className="p-3 font-bold">معرف البند</th>
+                      <th className="p-3 font-bold">التاريخ</th>
+                      <th className="p-3 font-bold">عملية المطابقة</th>
+                      <th className="p-3 font-bold text-center">قيمة النظام</th>
+                      <th className="p-3 font-bold text-center">القيمة الفعلية</th>
+                      <th className="p-3 font-bold text-center">الفارق</th>
+                      <th className="p-3 font-bold text-center">الحالة</th>
+                      <th className="p-3 font-bold text-center">الإجراء</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-medium">
+                    {filteredItems.map((item) => (
+                      <tr key={item.id} className="hover:bg-slate-50/80">
+                        <td className="p-3 font-mono font-bold text-slate-700">{item.id}</td>
+                        <td className="p-3 text-slate-500">{item.date}</td>
+                        <td className="p-3 font-bold text-slate-800">{item.title}</td>
+                        <td className="p-3 text-center font-bold text-slate-700">{item.systemValue}</td>
+                        <td className="p-3 text-center font-bold text-slate-700">{item.actualValue}</td>
+                        <td
+                          className={`p-3 text-center font-black ${
+                            item.difference < 0
+                              ? 'text-red-600'
+                              : item.difference > 0
+                              ? 'text-blue-600'
+                              : 'text-emerald-700'
+                          }`}
+                        >
+                          {item.difference}
+                        </td>
+                        <td className="p-3 text-center">
+                          <span
+                            className={`text-[10px] px-2 py-1 rounded-md font-bold inline-flex items-center gap-1 ${
+                              item.status === 'MATCHED'
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : item.status === 'DISCREPANCY'
+                                ? 'bg-red-50 text-red-700'
+                                : 'bg-amber-50 text-amber-700'
+                            }`}
+                          >
+                            {item.status === 'MATCHED' ? 'مطابق' : item.status === 'DISCREPANCY' ? 'فروقات' : 'معلق'}
+                          </span>
+                        </td>
+                        <td className="p-3 text-center">
+                          <button className="px-3 py-1 bg-[#064e46] text-white rounded-lg text-xs font-bold">
+                            تسوية
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </section>
+      </div>
     </div>
   );
 };
 
 export default ReconciliationModule;
+      

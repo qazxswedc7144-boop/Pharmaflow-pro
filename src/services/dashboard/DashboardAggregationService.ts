@@ -96,21 +96,16 @@ export class DashboardAggregationService {
       }
     });
 
-    // Let's resolve cash from accounts: fast indexed ID lookup
+    // Let's resolve cash from accounts: fast lookup
     // Assets: Cash accounts starting with '1' e.g. code = '101'
-    const cashAccounts = await db.accounts
-      .where('code')
-      .startsWith('1')
-      .toArray();
-    
+    const accounts = await db.accounts.toArray().catch(() => []);
+    const cashAccounts = accounts.filter(acc => acc.code && String(acc.code).startsWith('1'));
     const cash = cashAccounts.reduce((sum, acc) => sum + (acc.balance || 0), 0);
 
     // Let's get expenses from Expense accounts: code starts with '5' or type 'EXPENSE'
-    const expenseAccounts = await db.accounts
-      .toArray();
-    
+    const expenseAccounts = accounts;
     const expenseAccountIds = expenseAccounts
-      .filter(acc => acc.type === 'EXPENSE' || acc.code?.startsWith('5'))
+      .filter(acc => acc.type === 'EXPENSE' || (acc.code && String(acc.code).startsWith('5')))
       .map(acc => acc.id);
 
     // Filter journalEntries by status using indexed query

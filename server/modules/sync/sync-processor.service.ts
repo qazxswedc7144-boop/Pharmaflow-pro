@@ -435,6 +435,16 @@ export class SyncProcessorService {
       }
     }
 
+    // 6.5. UPDATE DEVICE SEQUENCE AND HEALTH TRACKING
+    if (envelope.deviceId && summary.successful.length > 0) {
+      const currentDev = await DeviceService.getDevice(tenantId, envelope.deviceId);
+      const newSeq = (currentDev?.lastSyncedSequence || 0) + summary.successful.length;
+      DeviceService.updateDeviceSequence(tenantId, envelope.deviceId, {
+        syncedSequence: newSeq,
+        ackSequence: newSeq
+      });
+    }
+
     // 7. RECORD BATCH AUDIT SUMMARY
     await SyncAuditService.logEvent({
       tenantId,
@@ -677,6 +687,45 @@ export class SyncProcessorService {
 
     // 3. FINANCIAL & INVENTORY WRITE HANDLERS
     if (["PAYMENT", "JOURNAL_ENTRY", "INVENTORY_MOVEMENT", "INVENTORY_BATCH"].includes(entity)) {
+      // 3.1 Strict Financial Integrity Validation
+      if (entity === "PAYMENT") {
+        const amt = Number(data.amount);
+        if (data.amount !== undefined && (isNaN(amt) || amt <= 0)) {
+          return {
+            id: mutationId,
+            mutationId,
+            status: "FAILED",
+            success: false,
+            error: "Invalid financial payment amount: must be a positive non-zero number",
+            serverVersion: version,
+            processedAt: new Date().toISOString()
+          };
+        }
+      }
+
+      if (entity === "JOURNAL_ENTRY") {
+        const lines = data.lines || data.journalLines;
+        if (Array.isArray(lines) && lines.length > 0) {
+          let totalDebit = 0;
+          let totalCredit = 0;
+          for (const line of lines) {
+            totalDebit += Number(line.debit || line.Debit || 0);
+            totalCredit += Number(line.credit || line.Credit || 0);
+          }
+          if (Math.abs(totalDebit - totalCredit) > 0.01) {
+            return {
+              id: mutationId,
+              mutationId,
+              status: "FAILED",
+              success: false,
+              error: `Unbalanced journal entry: debits (${totalDebit.toFixed(2)}) must match credits (${totalCredit.toFixed(2)})`,
+              serverVersion: version,
+              processedAt: new Date().toISOString()
+            };
+          }
+        }
+      }
+
       if (prisma.isConnected && prisma.isConnected()) {
         if (entity === "PAYMENT") {
           await prisma.payment.upsert({
@@ -738,6 +787,147 @@ export class SyncProcessorService {
       success: true,
       serverVersion: version + 1,
       processedAt: new Date().toISOString()
+    };
+  }
+
+  /**
+   * Evaluates conflict between client mutation and server record using Last-Write-Wins and domain rules.
+   */
+  async checkConflict(
+    entity: string,
+    entityId: string,
+    version: number,
+    tenantId: string,
+    existingServerRecord: Record<string, any> | null,
+    clientData: Record<string, any>
+  ): Promise<{
+    hasConflict: boolean;
+    category?: string;
+    resolutionStrategy?: "SERVER_WINS" | "CLIENT_WINS" | "MANUAL_MERGE";
+    message?: string;
+  }> {
+    return SyncProcessorService.checkConflict(entity, entityId, version, tenantId, existingServerRecord, clientData);
+  }
+
+  static async checkConflict(
+    _entity: string,
+    _entityId: string,
+    _version: number,
+    _tenantId: string,
+    existingServerRecord: Record<string, any> | null,
+    clientData: Record<string, any>
+  ): Promise<{
+    hasConflict: boolean;
+    category?: string;
+    resolutionStrategy?: "SERVER_WINS" | "CLIENT_WINS" | "MANUAL_MERGE";
+    message?: string;
+  }> {
+    if (!existingServerRecord) {
+      return { hasConflict: false };
+    }
+
+    const serverTime = existingServerRecord.updatedAt
+      ? new Date(existingServerRecord.updatedAt).getTime()
+      : 0;
+    const clientTimeStr = clientData?.clientUpdatedAt || clientData?.updatedAt || clientData?.clientMutationTime;
+    const clientTime = clientTimeStr ? new Date(clientTimeStr).getTime() : 0;
+
+    if (serverTime > 0 && clientTime > 0) {
+      if (clientTime < serverTime) {
+        return {
+          hasConflict: true,
+          category: "SAME_RECORD_CONFLICT",
+          resolutionStrategy: "SERVER_WINS",
+          message: "Server record is newer than incoming client update."
+        };
+      } else if (clientTime > serverTime) {
+        return {
+          hasConflict: true,
+          category: "SAME_RECORD_CONFLICT",
+          resolutionStrategy: "CLIENT_WINS",
+          message: "Client mutation is newer than server record."
+        };
+      }
+    }
+
+    return { hasConflict: false };
+  }
+
+  /**
+   * Processes a single mutation with strict financial integrity validation (amounts, balance check, etc.)
+   */
+  async processSingleMutation(
+    mutation: {
+      id?: string;
+      mutationId?: string;
+      entity: string;
+      entityId?: string;
+      type: string;
+      data?: Record<string, any>;
+      payload?: Record<string, any>;
+      version?: number;
+    },
+    tenantId: string
+  ): Promise<{
+    status: "SUCCESS" | "FAILED" | "REJECTED";
+    error?: string;
+    serverVersion?: number;
+  }> {
+    return SyncProcessorService.processSingleMutation(mutation, tenantId);
+  }
+
+  static async processSingleMutation(
+    mutation: {
+      id?: string;
+      mutationId?: string;
+      entity: string;
+      entityId?: string;
+      type: string;
+      data?: Record<string, any>;
+      payload?: Record<string, any>;
+      version?: number;
+    },
+    _tenantId: string
+  ): Promise<{
+    status: "SUCCESS" | "FAILED" | "REJECTED";
+    error?: string;
+    serverVersion?: number;
+  }> {
+    const data = mutation.data || mutation.payload || {};
+    const entity = (mutation.entity || "").toUpperCase();
+
+    // 1. PAYMENT VALIDATION: must have positive non-zero amount
+    if (entity === "PAYMENT") {
+      const amount = Number(data.amount);
+      if (isNaN(amount) || amount <= 0) {
+        return {
+          status: "FAILED",
+          error: "Financial integrity failure: Payment amount must be a positive non-zero number."
+        };
+      }
+    }
+
+    // 2. JOURNAL ENTRY VALIDATION: balanced debits and credits
+    if (entity === "JOURNAL_ENTRY") {
+      const lines = Array.isArray(data.lines) ? data.lines : [];
+      let totalDebit = 0;
+      let totalCredit = 0;
+      for (const line of lines) {
+        totalDebit += Number(line.debit || 0);
+        totalCredit += Number(line.credit || 0);
+      }
+      const diff = Math.abs(totalDebit - totalCredit);
+      if (diff > 0.0001) {
+        return {
+          status: "FAILED",
+          error: `Financial integrity failure: Unbalanced journal entry. Total debit (${totalDebit}) does not match total credit (${totalCredit}).`
+        };
+      }
+    }
+
+    return {
+      status: "SUCCESS",
+      serverVersion: (mutation.version || 1) + 1
     };
   }
 }

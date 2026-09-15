@@ -49,7 +49,7 @@ export const InvoiceItemEditModal: React.FC<InvoiceItemEditModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 font-sans" dir="rtl">
-      <div className="bg-white dark:bg-slate-950 rounded-2xl p-6 w-full max-w-md shadow-2xl border border-slate-100 dark:border-slate-800 animate-in fade-in zoom-in-95 duration-150">
+      <div className="bg-white dark:bg-slate-950 rounded-2xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto shadow-2xl border border-slate-100 dark:border-slate-800 animate-in fade-in zoom-in-95 duration-150">
         
         {/* رأس النافذة الديناميكي */}
         <div className="flex justify-between items-center mb-4">

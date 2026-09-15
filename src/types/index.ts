@@ -13,7 +13,7 @@ export * from "./api.types";
 export * from "./ai.types";
 export type { UserRoleEntry } from "./auth.types";
 export * from "./database.types";
-export type { BranchSettings, BranchInventory, TransferStatus, BranchTransfer, BranchTransferItem, BranchUser } from "./branch.types";
+export type { BranchSettings, BranchInventory, TransferStatus, BranchTransfer, BranchTransferItem, BranchUser, BranchMetrics } from "./branch.types";
 export * from "@features/events/event.types";
 
 import { InvoiceStatus } from "./invoice.types";

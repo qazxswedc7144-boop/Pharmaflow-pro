@@ -9,13 +9,17 @@ import { AccountingReportsService } from '@/features/accounting/services/Account
 import { AIUserContext, FinancialContextData } from '../types';
 
 export class AccountingContextAdapter {
-  private cache: { data: FinancialContextData; timestamp: number } | null = null;
+  private cache: Map<string, { data: FinancialContextData; timestamp: number }> = new Map();
   private CACHE_TTL_MS = 20000; // 20 seconds short-lived cache
 
   /**
-   * Retrieves financial context with strict role controls and caching.
+   * Retrieves financial context with strict role controls, tenant isolation, and caching.
    */
   public async getContext(userContext: AIUserContext): Promise<FinancialContextData> {
+    if (!userContext.tenantId || typeof userContext.tenantId !== 'string') {
+      throw new Error('TENANT_MISMATCH: معرف المنشأة (tenantId) إلزامي للوصول إلى السياق المالي للذكاء الاصطناعي.');
+    }
+
     // Role-Based Access Control: Financial data restricted to Admin, Accountant, Manager
     const allowedRoles = ['admin', 'accountant', 'manager'];
     if (!allowedRoles.includes(userContext.userRole)) {
@@ -28,8 +32,9 @@ export class AccountingContextAdapter {
     }
 
     const now = Date.now();
-    if (this.cache && now - this.cache.timestamp < this.CACHE_TTL_MS) {
-      return this.cache.data;
+    const cachedEntry = this.cache.get(userContext.tenantId);
+    if (cachedEntry && now - cachedEntry.timestamp < this.CACHE_TTL_MS) {
+      return cachedEntry.data;
     }
 
     try {
@@ -95,7 +100,7 @@ export class AccountingContextAdapter {
         cashFlowStatus: netProfit >= 0 ? 'positive' : 'tight',
       };
 
-      this.cache = { data: result, timestamp: now };
+      this.cache.set(userContext.tenantId, { data: result, timestamp: now });
       return result;
     } catch (error) {
       console.error('❌ [AccountingContextAdapter] Error assembling context:', error);

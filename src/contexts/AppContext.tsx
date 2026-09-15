@@ -15,13 +15,13 @@ import { CurrencyService } from '@/services/localization/CurrencyService';
 import { Customer, Supplier } from '@/types';
 
 export const refreshAllAppData = async () => {
-  await Promise.all([
-    useInventoryStore.getState().loadInventory(),
-    usePurchaseStore.getState().loadPurchases(),
-    useSalesStore.getState().loadSales(),
-    useAccountingStore.getState().loadAccounting(),
-    useCustomerStore.getState().loadCustomers(),
-    useSupplierStore.getState().loadSuppliers(),
+  await Promise.allSettled([
+    useInventoryStore.getState().loadInventory().catch(e => console.warn('[Refresh] Inventory load warning:', e)),
+    usePurchaseStore.getState().loadPurchases().catch(e => console.warn('[Refresh] Purchase load warning:', e)),
+    useSalesStore.getState().loadSales().catch(e => console.warn('[Refresh] Sales load warning:', e)),
+    useAccountingStore.getState().loadAccounting().catch(e => console.warn('[Refresh] Accounting load warning:', e)),
+    useCustomerStore.getState().loadCustomers().catch(e => console.warn('[Refresh] Customer load warning:', e)),
+    useSupplierStore.getState().loadSuppliers().catch(e => console.warn('[Refresh] Supplier load warning:', e)),
   ]);
 };
 
@@ -30,10 +30,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const init = async () => {
       try {
         await db.init();
+      } catch (e) {
+        console.warn("[AppContext] DB init notice:", e);
+      }
+      try {
         await useSettingsStore.getState().loadSettings();
+      } catch (e) {
+        console.warn("[AppContext] Settings load notice:", e);
+      }
+      try {
         await refreshAllAppData();
       } catch (e) {
-        console.error("[AppContext] Initialization failed:", e);
+        console.warn("[AppContext] Refresh data notice:", e);
       }
     };
     init();

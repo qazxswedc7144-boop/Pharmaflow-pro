@@ -1,7 +1,5 @@
 import { db } from '@/core/db';
 import { CurrencyService } from '@/services/localization/CurrencyService';
-import { FIFOEngine } from '@features/inventory/services/fifoEngine';
-import { StockMovementEngine } from '@features/inventory/services/stockMovementEngine';
 import { InvoiceRepository } from '@/database/repositories/invoice.repository';
 import { AccountingEngine } from '@features/accounting/services/AccountingEngine';
 import { AccountingRepository } from '@/database/repositories/AccountingRepository';
@@ -61,13 +59,68 @@ export const AutoJournalMapper = {
       ], async () => {
         
         // --- STEP A: Inventory Movement & Costing (1/3) ---
-        console.log(`[Structured Logs] [ACID Step 1/3] Calculating cost & executing Warehouse Stock Movements to prevent ghost inventory values.`);
+        console.log(`[Structured Logs] [ACID Step 1/3] Calculating cost & executing Warehouse Stock Movements via Unified Engine.`);
         let costResult = { totalCost: 0, itemCosts: {} };
         try {
           if (isPosting) {
-            costResult = await FIFOEngine.apply({ ...enrichedPayload, type });
-            await StockMovementEngine.apply({ ...enrichedPayload, type });
-            console.log(`[Structured Logs] [ACID Step 1/3 Success] FIFO costing applied successfully, total computed cost: ${costResult.totalCost}`);
+            const engine = (await import('@features/inventory/services/UnifiedInventoryMutationEngine')).unifiedInventoryMutationEngine;
+            const inventoryItems = enrichedPayload.items.map(i => ({
+              productId: i.product_id || i.productId || '',
+              quantity: Number(i.qty || i.quantity || 0),
+              unitCost: Number(i.price || i.unitPrice || 0),
+              batchId: i.batchId
+            }));
+
+            let mutationResults: any[] = [];
+            if (type === 'SALE') {
+              if (isReturn) {
+                mutationResults = await engine.executeSalesReturn({
+                  returnInvoiceId: invoiceId,
+                  warehouseId: 'WH-MAIN',
+                  items: inventoryItems,
+                  transactionUuid: `FIN-${invoiceId}`,
+                  userId: 'system-financial-mapper',
+                  tenantId: 'TEN-DEV-001'
+                });
+              } else {
+                mutationResults = await engine.executeIssueSale({
+                  invoiceId: invoiceId,
+                  warehouseId: 'WH-MAIN',
+                  items: inventoryItems,
+                  transactionUuid: `FIN-${invoiceId}`,
+                  userId: 'system-financial-mapper',
+                  tenantId: 'TEN-DEV-001'
+                });
+              }
+            } else {
+              if (isReturn) {
+                mutationResults = await engine.executePurchaseReturn({
+                  returnInvoiceId: invoiceId,
+                  warehouseId: 'WH-MAIN',
+                  items: inventoryItems,
+                  transactionUuid: `FIN-${invoiceId}`,
+                  userId: 'system-financial-mapper',
+                  tenantId: 'TEN-DEV-001'
+                });
+              } else {
+                mutationResults = await engine.executeReceivePurchase({
+                  invoiceId: invoiceId,
+                  warehouseId: 'WH-MAIN',
+                  items: inventoryItems,
+                  transactionUuid: `FIN-${invoiceId}`,
+                  userId: 'system-financial-mapper',
+                  tenantId: 'TEN-DEV-001'
+                });
+              }
+            }
+
+            const totalCost = mutationResults.reduce((sum, r) => sum + ((r.calculatedCost || 0) * Math.abs(r.delta || 0)), 0);
+            const itemCosts: Record<string, number> = {};
+            for (const r of mutationResults) {
+              itemCosts[r.productId] = (itemCosts[r.productId] || 0) + ((r.calculatedCost || 0) * Math.abs(r.delta || 0));
+            }
+            costResult = { totalCost, itemCosts };
+            console.log(`[Structured Logs] [ACID Step 1/3 Success] Unified mutation applied successfully, total computed cost: ${costResult.totalCost}`);
           } else {
             console.log(`[Structured Logs] [ACID Step 1/3 Bypass] Draft Status detected. Skipping inventory transactional write.`);
           }

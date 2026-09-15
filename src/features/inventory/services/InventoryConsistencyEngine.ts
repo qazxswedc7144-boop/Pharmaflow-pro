@@ -288,7 +288,10 @@ export class InventoryConsistencyEngine {
   }
 
   /**
-   * REPAIR ALL DETECTED STOCK MISMATCHES
+   * @deprecated [PHASE 3.3 DEPRECATION NOTICE]
+   * Direct silent overwriting via repairMismatches violates strict ERP compliance.
+   * All inventory corrections MUST go through InventoryCorrectionWorkflow:
+   * Human Decision -> RBAC Approval -> Atomic Dexie Transaction -> Double Entry Ledger -> Audit Trail.
    */
   static async repairMismatches(report: ConsistencyAuditReport): Promise<{ success: boolean; repairedCount: number }> {
     let repairedCount = 0;

@@ -168,9 +168,9 @@ export const SETTINGS_SECTIONS: SettingsSectionItem[] = [
   {
     id: 'subscription',
     groupId: 'maintenance',
-    title: 'إدارة الاشتراك والترخيص',
-    description: 'إدارة باقة الاشتراك السحابي، التراخيص، والدعم الفني المباشر',
-    keywords: ['اشتراك', 'ترخيص', 'باقة', 'دعم', 'ترقية', 'فواتير', 'تجديد', 'subscription', 'license', 'billing', 'support'],
+    title: 'الاشتراك والخطة (إدارة الترخيص)',
+    description: 'إدارة باقة الاشتراك السحابي، متابعة استهلاك العمليات، التراخيص، والترقية والتجديد',
+    keywords: ['اشتراك', 'الاشتراك والخطة', 'إدارة الاشتراك', 'ترخيص', 'باقة', 'دعم', 'ترقية', 'فواتير', 'تجديد', 'خطة', 'subscription', 'license', 'billing', 'support', 'plan'],
     icon: CreditCard,
     component: SubscriptionTab
   }

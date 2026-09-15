@@ -2,10 +2,10 @@
 import React, { useState, useEffect } from 'react';
 import { Check, X, RefreshCw } from 'lucide-react';
 import { PermissionDefinition, RoleItem } from '../types';
-import { useAuthStore } from '../../../store/authStore';
+import { resolveCanonicalPermission } from '@/utils/permissions';
+import { unifiedTransport } from '@/shared/network/transport/unifiedTransport';
 
 export const PermissionMatrix: React.FC = () => {
-  const { tenantId } = useAuthStore();
   const [permissions, setPermissions] = useState<PermissionDefinition[]>([]);
   const [roles, setRoles] = useState<RoleItem[]>([]);
   const [activeModuleFilter, setActiveModuleFilter] = useState<string>('ALL');
@@ -14,29 +14,16 @@ export const PermissionMatrix: React.FC = () => {
   const fetchMatrixData = async () => {
     setIsLoading(true);
     try {
-      const [permsRes, rolesRes] = await Promise.all([
-        fetch('/api/rbac/permissions', {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-            'x-tenant-id': tenantId || 'default-tenant'
-          }
-        }),
-        fetch('/api/rbac/roles', {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-            'x-tenant-id': tenantId || 'default-tenant'
-          }
-        })
+      const [pJson, rJson] = await Promise.all([
+        unifiedTransport.get<any>('/api/rbac/permissions'),
+        unifiedTransport.get<any>('/api/rbac/roles')
       ]);
 
-      if (permsRes.ok) {
-        const pJson = await permsRes.json();
-        if (pJson.data?.permissions) setPermissions(pJson.data.permissions);
+      if (pJson && pJson.data?.permissions) {
+        setPermissions(pJson.data.permissions);
       }
-
-      if (rolesRes.ok) {
-        const rJson = await rolesRes.json();
-        if (rJson.data) setRoles(rJson.data);
+      if (rJson && rJson.data) {
+        setRoles(rJson.data);
       }
     } catch (e) {
       console.warn('[Matrix] error fetching data:', e);
@@ -57,7 +44,8 @@ export const PermissionMatrix: React.FC = () => {
 
   const hasPermission = (role: RoleItem, permKey: string): boolean => {
     if (role.permissions.includes('*')) return true;
-    return role.permissions.includes(permKey);
+    const canonical = resolveCanonicalPermission(permKey);
+    return role.permissions.includes(permKey) || role.permissions.includes(canonical) || role.permissions.some(p => resolveCanonicalPermission(p) === canonical);
   };
 
   return (

@@ -10,6 +10,7 @@ import {
 } from '../types';
 import { OCRDocumentParser } from '../ocrDocumentParser';
 import { generateFileHash } from '@/utils/hash';
+import { configurationService } from '@/services/config/configurationService';
 
 /**
  * OCR & Image/Camera Document Parser Adapter
@@ -37,12 +38,9 @@ export class OcrImageParserAdapter implements ImportSourceParser {
 
     let cachedDoc: CanonicalImportDocument | null = null;
     try {
-      const cachedStr = localStorage.getItem(cacheKey);
-      if (cachedStr) {
-        const parsed = JSON.parse(cachedStr);
-        if (parsed && parsed.timestamp && (Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000)) {
-          cachedDoc = parsed.document;
-        }
+      const parsed = configurationService.getSync<any>(cacheKey);
+      if (parsed && parsed.timestamp && (Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000)) {
+        cachedDoc = parsed.document;
       }
     } catch {
       // ignore storage access errors
@@ -69,6 +67,7 @@ export class OcrImageParserAdapter implements ImportSourceParser {
         discount: row.discountPercent,
         barcode: row.barcode,
         bonusQty: row.bonusQty,
+        productCode: row.productCode,
         unit: row.unit,
         notes: row.notes
       },
@@ -137,10 +136,10 @@ export class OcrImageParserAdapter implements ImportSourceParser {
 
     // Cache document
     try {
-      localStorage.setItem(cacheKey, JSON.stringify({
+      configurationService.set(cacheKey, {
         document: doc,
         timestamp: Date.now()
-      }));
+      }).catch(() => {});
     } catch {
       // ignore
     }

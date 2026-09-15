@@ -1,10 +1,22 @@
 // src/features/purchases/services/smartImport/batchProcessing/types.ts
 /**
- * Types & Data Contracts for PharmaFlow Enterprise Smart Import Batch Processing Center (Phase 2.2)
+ * Types & Data Contracts for PharmaFlow Enterprise Smart Import Batch Processing Center (Phase 2.2 - Phase 2.4)
  */
 
 import { ImportSourceType, ImportDiagnostic } from '../types';
 import { InvoiceItem, Product, Supplier } from '@/types';
+import { 
+  ResolutionStatus, 
+  ResolutionCategory, 
+  ResolutionDecision, 
+  ConflictSource, 
+  ConflictType, 
+  ResolutionItem, 
+  DosageSafetyReport
+} from '../domain/resolution.types';
+import { NormalizedPharmaceuticalInfo } from '../aliasLearning/aliasLearning.types';
+
+export * from '../domain/resolution.types';
 
 export enum BatchProcessingStatus {
   ANALYZING = 'ANALYZING',
@@ -40,6 +52,7 @@ export interface SupplierCandidate {
   phone?: string;
   taxNumber?: string;
   score: number;
+  matchTier?: string;
 }
 
 export interface SupplierDecision {
@@ -58,6 +71,8 @@ export interface SupplierDecision {
   };
   reason?: string;
   isSkipped?: boolean;
+  resolutionStatus?: ResolutionStatus;
+  userDecision?: ResolutionDecision;
 }
 
 export enum ProductResolutionAction {
@@ -77,6 +92,9 @@ export interface ProductCandidate {
   unitPrice?: number;
   stockQuantity?: number;
   categoryName?: string;
+  matchTier?: string;
+  explanation?: string;
+  pharmaceuticalInfo?: NormalizedPharmaceuticalInfo;
 }
 
 export interface ProductDecision {
@@ -107,12 +125,24 @@ export interface ProductDecision {
     categoryName?: string;
     unitPrice?: number;
     costPrice?: number;
+    strength?: string;
+    form?: string;
   };
   isNewProductCandidate?: boolean;
   isDuplicate?: boolean;
   duplicateReason?: string;
   isSkipped?: boolean;
   validationIssues: string[];
+  // Phase 2.4 Human Resolution UX Enriched Fields
+  dosageSafety?: DosageSafetyReport;
+  extractedInfo?: NormalizedPharmaceuticalInfo;
+  resolutionStatus?: ResolutionStatus;
+  resolutionCategory?: ResolutionCategory;
+  userDecision?: ResolutionDecision;
+  conflictSource?: ConflictSource;
+  conflictType?: ConflictType;
+  sourceProvenance?: 'OCR' | 'AI' | 'LOCAL_PARSER' | 'DATABASE_MATCH' | 'USER' | 'FALLBACK';
+  evidence?: string;
 }
 
 export interface BatchProcessingSummary {
@@ -122,10 +152,13 @@ export interface BatchProcessingSummary {
   createNewCount: number;
   skippedCount: number;
   unresolvedCount: number;
+  criticalConflictsCount?: number;
   totalAmount: number;
   detectedSupplier?: string;
   detectedInvoiceNumber?: string;
   detectedDate?: string;
+  invoiceNumberSource?: 'OCR' | 'AI' | 'USER' | 'UNKNOWN';
+  invoiceNumberConfidence?: number;
 }
 
 export interface BatchProcessingSession {
@@ -146,6 +179,7 @@ export interface BatchProcessingSession {
   idempotencyKey?: string;
   appliedAt?: string;
   cancelledAt?: string;
+  resolutionItems?: ResolutionItem[];
 }
 
 export interface ValidationIssue {
@@ -181,6 +215,14 @@ export interface CanonicalResolutionResult {
   appliedDate: string;
   executionTimeMs: number;
   idempotentReplay?: boolean;
+  aliasLearningSummary?: {
+    supplierAliasesLearned: number;
+    productAliasesLearned: number;
+    catalogReferencesLearned: number;
+    rejectionsRecorded: number;
+    conflictsDetected: number;
+    warnings: string[];
+  };
 }
 
 export interface BatchApplyContext {

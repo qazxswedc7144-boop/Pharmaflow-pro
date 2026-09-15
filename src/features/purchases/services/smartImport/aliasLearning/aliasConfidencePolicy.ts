@@ -25,6 +25,36 @@ export class AliasConfidencePolicy {
   public static readonly THRESHOLD_SUPPRESSED = 0.50;
 
   /**
+   * Helper to calculate a raw numerical score from usage metrics
+   */
+  static calculateScore(params: {
+    usageCount?: number;
+    confirmationCount?: number;
+    rejectionCount?: number;
+    lastUsedAt?: string;
+    isGlobal?: boolean;
+    source?: AliasSource;
+  }): number {
+    const dummy: ProductAlias = {
+      id: 'dummy',
+      tenantId: 'dummy',
+      productId: 'dummy',
+      aliasRaw: 'dummy',
+      aliasNormalized: 'dummy',
+      isGlobal: params.isGlobal ?? true,
+      source: params.source ?? AliasSource.IMPORT_CONFIRMATION,
+      confidence: 0.85,
+      usageCount: params.usageCount ?? 1,
+      confirmedCount: params.confirmationCount ?? 1,
+      rejectedCount: params.rejectionCount ?? 0,
+      lastUsedAt: params.lastUsedAt || new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    return this.evaluateProductAlias(dummy).finalScore;
+  }
+
+  /**
    * Calculates an explainable confidence score for a Product Alias
    */
   static evaluateProductAlias(alias: ProductAlias): ConfidenceExplanation {

@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { configurationService } from '@/services/config/configurationService';
 
 type ThemeMode = 'light' | 'dark' | 'system';
 
@@ -12,12 +13,8 @@ const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [themeMode, setThemeState] = useState<ThemeMode>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('saas_theme_mode') as ThemeMode;
-      console.log(`[ThemeContext] Initializing, localStorage: ${saved}`);
-      return saved || 'system';
-    }
-    return 'system';
+    const syncVal = configurationService.getSync<ThemeMode>('user.theme');
+    return syncVal || 'system';
   });
 
   const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>('light');
@@ -27,52 +24,61 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (mode === 'dark') {
       isDark = true;
     } else if (mode === 'system') {
-      isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      isDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
     }
     
     setResolvedTheme(isDark ? 'dark' : 'light');
 
-    if (isDark) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
+    if (typeof document !== 'undefined') {
+      if (isDark) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
     }
   };
 
   useEffect(() => {
-    // Initial apply
-    updateRootThemeAndResolved(themeMode);
+    // Load setting asynchronously from configurationService
+    configurationService.get<ThemeMode>('user.theme').then((mode) => {
+      if (mode) {
+        setThemeState(mode);
+        updateRootThemeAndResolved(mode);
+      }
+    });
 
-    // Listen to changes from settings or other modules
-    const handleThemeUpdate = () => {
-      const current = (localStorage.getItem('saas_theme_mode') as ThemeMode) || 'system';
-      setThemeState(current);
-      updateRootThemeAndResolved(current);
-    };
+    // Subscribe to theme configuration changes
+    const unsubscribe = configurationService.subscribe('user.theme', (event) => {
+      if (event.value) {
+        const newMode = event.value as ThemeMode;
+        setThemeState(newMode);
+        updateRootThemeAndResolved(newMode);
+      }
+    });
 
-    window.addEventListener('saas-theme-updated', handleThemeUpdate);
-
-    // Listen to system theme changes if we are on 'system' mode
-    const systemMedia = window.matchMedia('(prefers-color-scheme: dark)');
+    const systemMedia = typeof window !== 'undefined' ? window.matchMedia('(prefers-color-scheme: dark)') : null;
     const handleSystemMediaChange = () => {
       if (themeMode === 'system') {
         updateRootThemeAndResolved('system');
       }
     };
 
-    systemMedia.addEventListener('change', handleSystemMediaChange);
+    if (systemMedia) {
+      systemMedia.addEventListener('change', handleSystemMediaChange);
+    }
 
     return () => {
-      window.removeEventListener('saas-theme-updated', handleThemeUpdate);
-      systemMedia.removeEventListener('change', handleSystemMediaChange);
+      unsubscribe();
+      if (systemMedia) {
+        systemMedia.removeEventListener('change', handleSystemMediaChange);
+      }
     };
   }, [themeMode]);
 
-  const setThemeMode = (mode: ThemeMode) => {
-    localStorage.setItem('saas_theme_mode', mode);
+  const setThemeMode = async (mode: ThemeMode) => {
     setThemeState(mode);
     updateRootThemeAndResolved(mode);
-    window.dispatchEvent(new Event('saas-theme-updated'));
+    await configurationService.set('user.theme', mode);
   };
 
   return (
@@ -89,3 +95,4 @@ export const useTheme = () => {
   }
   return context;
 };
+

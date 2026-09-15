@@ -13,6 +13,8 @@ import { FHIRService } from '../integrations/fhirService';
 import { ApiGatewayService, ApiKeyConfig } from '../api/apiGateway';
 import { ReviewerSaaSTester } from '@features/saas/components/SubscriptionWidgets';
 import { NotificationService } from '@/context/NotificationContext';
+import { unifiedTransport } from '@/shared/network/transport/unifiedTransport';
+import { observabilityService } from '@/core/observability/observabilityService';
 
 interface SaaSModuleProps {
   onNavigate?: (view: string) => void;
@@ -119,16 +121,11 @@ export default function SaaSModule({ onNavigate: _onNavigate }: SaaSModuleProps)
     setIsLoadingMetrics(true);
     setMetricsError('');
     try {
-      const response = await fetch('/api/saas/metrics', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
-        }
-      });
-      const data = await response.json();
-      if (data.success) {
+      const data: any = await unifiedTransport.get('/api/saas/metrics');
+      if (data && data.success) {
         setPlatformMetrics(data.metrics);
       } else {
-        setMetricsError(data.message || 'فشل تحميل بيانات دور مالك المنصة.');
+        setMetricsError(data?.message || 'فشل تحميل بيانات دور مالك المنصة.');
         // Fallback for demo when JWT role is not PLATFORM_OWNER yet
         setPlatformMetrics({
           totalTenants: 12,
@@ -161,13 +158,8 @@ export default function SaaSModule({ onNavigate: _onNavigate }: SaaSModuleProps)
    */
   const fetchSubscriptionLimitStatus = async () => {
     try {
-      const response = await fetch(`/api/saas/subscription-status/${tenantId}`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || ''}`
-        }
-      });
-      const data = await response.json();
-      if (data.success) {
+      const data: any = await unifiedTransport.get(`/api/saas/subscription-status/${tenantId}`);
+      if (data && data.success) {
         setSubLimitData({
           allowed: data.allowed,
           current: data.current,
@@ -185,9 +177,8 @@ export default function SaaSModule({ onNavigate: _onNavigate }: SaaSModuleProps)
    */
   const handleSeedPlans = async () => {
     try {
-      const res = await fetch('/api/saas/seed-plans', { method: 'POST' });
-      const data = await res.json();
-      NotificationService.success(data.message || "تم دفق الخطط الأربعة بنجاح!");
+      const data: any = await unifiedTransport.post('/api/saas/seed-plans');
+      NotificationService.success(data?.message || "تم دفق الخطط الأربعة بنجاح!");
       fetchPlatformMetrics();
     } catch (err: any) {
       NotificationService.error("فشل تحديث خطط الاشتراك بالخادم: " + err.message);
@@ -209,22 +200,15 @@ export default function SaaSModule({ onNavigate: _onNavigate }: SaaSModuleProps)
     setRegistrationSuccessData(null);
 
     try {
-      const response = await fetch('/api/saas/register-tenant', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          username: regUsername,
-          password: regPassword,
-          tenantName: regTenantName,
-          branchName: regBranchName || "الفرع الرئيسي",
-          planCode: regPlan
-        })
+      const resData: any = await unifiedTransport.post('/api/saas/register-tenant', {
+        username: regUsername,
+        password: regPassword,
+        tenantName: regTenantName,
+        branchName: regBranchName || "الفرع الرئيسي",
+        planCode: regPlan
       });
 
-      const resData = await response.json();
-      if (resData.success) {
+      if (resData && resData.success) {
         setRegistrationSuccessData(resData.data);
         // Clear fields
         setRegUsername('');
@@ -234,7 +218,7 @@ export default function SaaSModule({ onNavigate: _onNavigate }: SaaSModuleProps)
         // Refresh metrics
         fetchPlatformMetrics();
       } else {
-        setRegistrationError(resData.message || "حدث خطأ أثناء معالجة تسجيل المؤسسة.");
+        setRegistrationError(resData?.message || "حدث خطأ أثناء معالجة تسجيل المؤسسة.");
       }
     } catch (err: any) {
       console.error(err);
@@ -346,15 +330,11 @@ export default function SaaSModule({ onNavigate: _onNavigate }: SaaSModuleProps)
 
     // Save success audit log
     try {
-      await db.Audit_Log.add({
-        id: db.generateId('LOG'),
-        action: 'CLOUD_SYNC',
-        user_id: 'SYSTEM_SaaS',
-        userName: 'مشرف السحابة',
-        target_id: tenantId,
-        target_type: 'TENANT',
-        timestamp: new Date().toISOString(),
-        details: `مزامنة سحابية تامة مشفرة من أطراف ثنائية بالتوقيع المشفر. حجم السجلات: ${stats.products + stats.sales}`
+      await observabilityService.record({
+        type: 'HEALTH',
+        subsystem: 'sync',
+        status: 'HEALTHY',
+        details: { message: `مزامنة سحابية تامة مشفرة من أطراف ثنائية بالتوقيع المشفر. حجم السجلات: ${stats.products + stats.sales}`, feature: 'CLOUD_SYNC', tenantId }
       });
     } catch(err) {}
   };
@@ -514,11 +494,10 @@ export default function SaaSModule({ onNavigate: _onNavigate }: SaaSModuleProps)
                 <span className="text-sm font-black text-slate-700 dark:text-white mt-1">BASIC / ACTIVE</span>
                 <button 
                   onClick={async () => {
-                    await fetch('/api/saas/seed-plans', { method: 'POST' });
+                    await unifiedTransport.post('/api/saas/seed-plans');
                     // Increment and refresh
-                    const res = await fetch(`/api/saas/subscription-status/${tenantId}`);
-                    const d = await res.json();
-                    if (d.success) setSubLimitData(d);
+                    const d: any = await unifiedTransport.get(`/api/saas/subscription-status/${tenantId}`);
+                    if (d?.success) setSubLimitData(d);
                     NotificationService.success("تم تنشيط رخصة الاشتراك وتعديل الأرصدة التراكمية.");
                   }}
                   className="mt-2 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-[10px] px-3 py-1 rounded-lg transition"
@@ -675,13 +654,13 @@ export default function SaaSModule({ onNavigate: _onNavigate }: SaaSModuleProps)
                   <div className="space-y-1.5">
                     <a
                       id="btn-whatsapp-support"
-                      href="https://wa.me/966500000000"
+                      href="https://wa.me/967772093714"
                       target="_blank"
                       rel="noopener noreferrer"
                       className="flex items-center justify-between p-2.5 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 rounded-xl text-xs font-black transition"
                     >
                       <span>💬 تواصل واتساب فني فوري (SLA)</span>
-                      <span className="font-mono text-[10px]">+966 50 000 0000</span>
+                      <span className="font-mono text-[10px]" dir="ltr">772093714 (967+)</span>
                     </a>
                     
                     <a

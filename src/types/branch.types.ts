@@ -62,3 +62,14 @@ export interface BranchUser {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface BranchMetrics {
+  branchId: string;
+  salesToday: number;
+  salesTodayCount: number;
+  inventoryValue: number;
+  lowStockCount: number;
+  totalProductsCount: number;
+  syncStatus: 'ONLINE' | 'OFFLINE' | 'SYNCING' | 'DEGRADED';
+}
+

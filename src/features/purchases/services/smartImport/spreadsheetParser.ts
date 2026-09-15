@@ -230,6 +230,40 @@ export class SpreadsheetParser {
   }
 
   /**
+   * Detects whether a row is a repeated header row (e.g. from page breaks in multi-page PDFs or spreadsheets).
+   */
+  static isRepeatedHeaderRow(row: string[], primaryHeaders: string[] = []): boolean {
+    if (!row || row.length === 0) return false;
+
+    // Check if row has exact or near-exact match with primary headers
+    if (primaryHeaders && primaryHeaders.length > 0) {
+      const cleanRow = row.map(c => this.sanitizeCellValue(c).toLowerCase().trim()).filter(Boolean);
+      const cleanHeaders = primaryHeaders.map(h => this.sanitizeCellValue(h).toLowerCase().trim()).filter(Boolean);
+      let matchCount = 0;
+      for (const cell of cleanRow) {
+        if (cleanHeaders.includes(cell)) {
+          matchCount++;
+        }
+      }
+      if (matchCount >= 2 && matchCount / Math.max(cleanRow.length, 1) >= 0.4) {
+        return true;
+      }
+    }
+
+    // Check if row cells contain multiple header keywords
+    const combined = row.join(' ').toLowerCase();
+    const headerKeywords = [
+      'اسم الصنف', 'البيان', 'الصنف', 'الوصف', 'الكمية', 'السعر', 'الإجمالي', 'المجموع',
+      'item', 'description', 'product', 'qty', 'price', 'total', 'barcode'
+    ];
+    let kwCount = 0;
+    for (const kw of headerKeywords) {
+      if (combined.includes(kw)) kwCount++;
+    }
+    return kwCount >= 2;
+  }
+
+  /**
    * Detects the probable header row in the table (scanning rows 0 through 25)
    */
   static findTableHeaders(rows: string[][]): { headerRowIndex: number; columnDefs: ColumnDefinition[] } {
@@ -303,12 +337,17 @@ export class SpreadsheetParser {
     const rawRows: CanonicalImportRawRow[] = [];
     for (let r = headerRowIndex + 1; r < grid.length; r++) {
       const row = grid[r];
-      if (!row || row.length === 0 || this.isFooterOrSummaryRow(row)) continue;
+      if (!row || row.length === 0 || this.isFooterOrSummaryRow(row) || this.isRepeatedHeaderRow(row, headers)) continue;
 
       const cells: Record<string, unknown> = {};
       headers.forEach((_, idx) => {
         const fieldName = columnDefs[idx]?.mappedField || `Col_${idx + 1}`;
-        cells[fieldName] = row[idx] ?? '';
+        const rawVal = row[idx];
+        if (rawVal !== undefined && String(rawVal).trim() !== '') {
+          cells[fieldName] = rawVal;
+        } else {
+          cells[fieldName] = undefined;
+        }
       });
 
       rawRows.push({

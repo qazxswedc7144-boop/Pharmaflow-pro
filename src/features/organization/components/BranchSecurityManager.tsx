@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '../../../store/authStore';
 import { TenantUserItem } from '../types';
+import { unifiedTransport } from '@/shared/network/transport/unifiedTransport';
 
 export const BranchSecurityManager: React.FC = () => {
   const { tenantId } = useAuthStore();
@@ -29,18 +30,10 @@ export const BranchSecurityManager: React.FC = () => {
   useEffect(() => {
     const fetchUsers = async () => {
       try {
-        const res = await fetch('/api/organization/users', {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-            'x-tenant-id': tenantId || 'default-tenant'
-          }
-        });
-        if (res.ok) {
-          const json = await res.json();
-          if (json.data && json.data.length > 0) {
-            setUsers(json.data);
-            setSimUserId(json.data[0].id);
-          }
+        const json: any = await unifiedTransport.get('/api/organization/users');
+        if (json && json.data && json.data.length > 0) {
+          setUsers(json.data);
+          setSimUserId(json.data[0].id);
         }
       } catch (e) {
         console.warn('Could not load users for simulator:', e);

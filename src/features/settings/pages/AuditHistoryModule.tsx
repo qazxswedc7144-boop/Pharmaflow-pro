@@ -11,19 +11,22 @@ import {
   Lock
 } from 'lucide-react';
 import { EncryptedAuditExportModal } from '@/components/shared/EncryptedAuditExportModal';
+import { SettingsSectionHeader } from '../components/navigation/SettingsSectionHeader';
 
 interface AuditHistoryModuleProps {
-  onNavigate?: (view: any, params?: any) => void;
+  onNavigate?: (view: any, params?: any, options?: any) => void;
   recordId?: string; 
   tableName?: string;
   initialFilter?: 'ALL' | 'ADD' | 'UPDATE' | 'DELETE';
+  from?: string;
 }
 
 const AuditHistoryModule: React.FC<AuditHistoryModuleProps> = ({ 
   onNavigate, 
   recordId, 
   tableName,
-  initialFilter = 'ALL'
+  initialFilter = 'ALL',
+  from
 }) => {
   const { version } = useUI();
   const [logs, setLogs] = useState<FinancialAuditEntry[]>([]);
@@ -31,6 +34,15 @@ const AuditHistoryModule: React.FC<AuditHistoryModuleProps> = ({
   const [filterType, setFilterType] = useState<'ALL' | 'ADD' | 'UPDATE' | 'DELETE'>(initialFilter);
   const [loading, setLoading] = useState(true);
   const [showExportModal, setShowExportModal] = useState(false);
+
+  useEffect(() => {
+    // Reset window and any enclosing scroll container immediately to 0
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+    const mainEl = document.querySelector('main');
+    if (mainEl) {
+      mainEl.scrollTop = 0;
+    }
+  }, []);
 
   useEffect(() => {
     if (initialFilter) {
@@ -89,12 +101,12 @@ const AuditHistoryModule: React.FC<AuditHistoryModuleProps> = ({
   return (
     <div className="p-2 sm:p-4 space-y-4 sm:space-y-5 bg-[#F8FAFA] min-h-full pb-32 animate-in fade-in w-full" dir="rtl">
       {/* Unified Settings Section Header */}
-      <Header
+      <SettingsSectionHeader
         title="سجل الرقابة النهائية"
         subtitle={recordId ? `تاريخ تدقيق المستند: #${recordId}` : 'سجل تدقيق غير قابل للتلاعب'}
         icon={ShieldCheck}
-        onBack={onNavigate ? () => onNavigate('settings') : undefined}
-        backTitle="العودة للإعدادات"
+        onBack={onNavigate ? () => onNavigate(from || 'dashboard', null, { replace: true }) : undefined}
+        backTitle={from === 'settings' ? 'العودة للإعدادات' : 'العودة للرئيسية'}
         badge={
           <div className="inline-flex items-center gap-1.5 bg-emerald-950/80 px-2.5 py-0.5 rounded-full border border-emerald-500/30 text-emerald-200">
             <Lock size={11} className="text-emerald-400" />

@@ -1,4 +1,5 @@
 import { db } from '@/core/db';
+import { configurationService } from '@/services/config/configurationService';
 import { UserBehavior } from '@/types';
 import { AlertCenter } from '@/services/notifications/AlertCenter';
 
@@ -109,10 +110,10 @@ export class BehaviorMonitor {
   }
 
   static async getRiskyUsers() {
-    const settingsList = await db.db.settings.toArray();
-    const behaviors = settingsList
-      .filter((s: { key: string; value: any }) => s.key.startsWith('user_behavior_'))
-      .map((s: { key: string; value: any }) => s.value as UserBehavior);
+    const settingsList = await configurationService.get<any[]>('ALL_SETTINGS').catch(() => []) || [];
+    const behaviors = Array.isArray(settingsList) ? settingsList
+      .filter((s: { key: string; value: any }) => s && s.key && s.key.startsWith('user_behavior_'))
+      .map((s: { key: string; value: any }) => s.value as UserBehavior) : [];
 
     return behaviors
       .map((b: UserBehavior) => ({

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { db } from '@/core/db';
+import { configurationService } from '@/services/config/configurationService';
 import { CurrencyService } from '@/services/localization/CurrencyService';
 import { BackupCredentialVault } from '@/features/backup/services/BackupCredentialVault';
 
@@ -15,22 +15,17 @@ interface SettingsState {
   setBackupPassword: (password: string) => Promise<void>;
 }
 
-const initialCurrency = typeof window !== 'undefined'
-  ? (localStorage.getItem('pharmaflow_currency') || localStorage.getItem('pharma_currency') || 'YER')
-  : 'YER';
-
 export const useSettingsStore = create<SettingsState>((set) => ({
-  currency: initialCurrency,
+  currency: configurationService.getSync<string>('system.currency') || 'YER',
   isSettingsOpen: false,
   autoBackupEnabled: false,
   backupPassword: '',
   loadSettings: async () => {
     try {
-      const savedCurrencyRecord = await db.db.settings.get('currency') || await db.db.settings.get('ACTIVE_CURRENCY');
-      if (savedCurrencyRecord?.value) {
-        const val = String(savedCurrencyRecord.value).toUpperCase();
-        localStorage.setItem('pharmaflow_currency', val);
-        localStorage.setItem('pharma_currency', val);
+      await configurationService.initialize();
+      const curr = await configurationService.get<string>('system.currency');
+      if (curr) {
+        const val = String(curr).toUpperCase();
         if (typeof window !== 'undefined') {
           (window as Window & typeof globalThis & { currentSystemCurrency?: string }).currentSystemCurrency = val;
         }
@@ -43,9 +38,10 @@ export const useSettingsStore = create<SettingsState>((set) => ({
           set({ currency: 'YER' });
         }
       }
-      const autoBackupRecord = await db.db.settings.get('autoBackupEnabled');
-      if (autoBackupRecord && typeof autoBackupRecord.value === 'boolean') {
-        set({ autoBackupEnabled: autoBackupRecord.value });
+
+      const autoBackup = await configurationService.get<boolean>('system.auto_backup');
+      if (typeof autoBackup === 'boolean') {
+        set({ autoBackupEnabled: autoBackup });
       }
 
       // Safe migration of legacy plaintext password if present
@@ -64,21 +60,15 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   setCurrency: async (currency, label) => {
     const code = currency.toUpperCase();
     const currencyLabel = label || CurrencyService.getCurrencyName(code);
-    
-    // Instant UI update in state & localStorage
+
     if (typeof window !== 'undefined') {
-      localStorage.setItem('pharmaflow_currency', code);
-      localStorage.setItem('pharma_currency', code);
       (window as Window & typeof globalThis & { currentSystemCurrency?: string }).currentSystemCurrency = code;
     }
     set({ currency: code });
-    
-    // Background persistence & event notification
+
     try {
-      await db.db.settings.put({ key: 'currency', value: code });
-      await db.db.settings.put({ key: 'ACTIVE_CURRENCY', value: code });
-      await db.db.settings.put({ key: 'currencyLabel', value: currencyLabel });
-      await db.db.settings.put({ key: 'ACTIVE_CURRENCY_NAME', value: currencyLabel });
+      await configurationService.set('system.currency', code);
+      await configurationService.set('system.currency_label', currencyLabel);
       await CurrencyService.setGlobalCurrency(code, currencyLabel);
     } catch (e) {
       console.error("[useSettingsStore] Error saving currency in background:", e);
@@ -86,7 +76,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   },
   setSettingsOpen: (isOpen) => set({ isSettingsOpen: isOpen }),
   setAutoBackupEnabled: async (enabled) => {
-    await db.db.settings.put({ key: 'autoBackupEnabled', value: enabled });
+    await configurationService.set('system.auto_backup', enabled);
     set({ autoBackupEnabled: enabled });
   },
   setBackupPassword: async (password) => {
@@ -94,5 +84,6 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     set({ backupPassword: password });
   },
 }));
+
 
 

@@ -173,14 +173,14 @@ ${text}
       type: (validatedData.type === 'cash' || validatedData.type === 'credit' || validatedData.type === 'return') 
         ? validatedData.type 
         : 'cash',
-      supplier: validatedData.supplier || 'غير معروف',
-      invoice_number: validatedData.invoice_number || 'INV-' + Math.floor(Math.random() * 100000),
+      supplier: (validatedData.supplier && validatedData.supplier !== 'غير معروف') ? validatedData.supplier : '',
+      invoice_number: validatedData.invoice_number || '',
       date: validatedData.date || new Date().toISOString().split('T')[0],
       notes: validatedData.notes 
         ? `[استيراد ذكي: تم تصفية الأعمدة الزائدة والاحتفاظ بالبيانات المطلوبة فقط] ${validatedData.notes}` 
         : '[استيراد ذكي: تم تصفية الأعمدة الزائدة والاحتفاظ بالبيانات المطلوبة فقط]',
       items: (validatedData.items || []).map((item: any) => ({
-        name: item.name || 'مادة مجهولة الاسم',
+        name: item.name || '',
         barcode: item.barcode || undefined,
         quantity: typeof item.quantity === 'number' && item.quantity > 0 ? item.quantity : (Number(item.quantity) || 1),
         price: typeof item.price === 'number' && item.price >= 0 ? item.price : (Number(item.price) || 0),
@@ -201,8 +201,8 @@ ${text}
     // في حالة حدوث خطأ، نقوم بإرجاع مسودة آمنة وفارغة متوافقة مع القواعد الصارمة والشرط رقم 1 ورقم 4
     return {
       type: 'cash',
-      supplier: 'مورد غير معروف - فشل القراءة الآلية',
-      invoice_number: 'ERR-' + Math.floor(Math.random() * 100000),
+      supplier: '',
+      invoice_number: '',
       date: new Date().toISOString().split('T')[0],
       notes: `[فشل في الفك الآلي] يرجى إدخال البيانات يدوياً. ${humanReviewWarning}`,
       items: [],

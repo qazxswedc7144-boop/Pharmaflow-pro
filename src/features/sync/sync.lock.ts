@@ -3,6 +3,8 @@
 // Phase 8.3 Safe Synchronization Lock Manager
 // ==========================================
 
+import { configurationService } from "@/services/config/configurationService";
+
 const SYNC_LOCK_KEY = "pharmaflow_sync_lock";
 const DEFAULT_LOCK_TTL_MS = 25000; // 25 seconds safety timeout
 
@@ -19,23 +21,14 @@ export class SyncLockManager {
    * Attempts to acquire the synchronization lock.
    */
   static acquireLock(ttlMs: number = DEFAULT_LOCK_TTL_MS): boolean {
-    if (typeof window === "undefined" || !window.localStorage) {
-      return true; // Non-browser environment fallback
-    }
-
     try {
       const now = Date.now();
-      const raw = localStorage.getItem(SYNC_LOCK_KEY);
+      const lock = configurationService.getSync<LockData>(SYNC_LOCK_KEY);
 
-      if (raw) {
-        try {
-          const lock: LockData = JSON.parse(raw);
-          if (now < lock.expiresAt && lock.owner !== this.lockOwnerId) {
-            // Lock is still active and held by another process/tab
-            return false;
-          }
-        } catch {
-          // Corrupted lock data, proceed to take over
+      if (lock && lock.expiresAt) {
+        if (now < lock.expiresAt && lock.owner !== this.lockOwnerId) {
+          // Lock is still active and held by another process/tab
+          return false;
         }
       }
 
@@ -45,7 +38,7 @@ export class SyncLockManager {
         acquiredAt: now,
         expiresAt: now + ttlMs
       };
-      localStorage.setItem(SYNC_LOCK_KEY, JSON.stringify(newLock));
+      configurationService.set(SYNC_LOCK_KEY, newLock).catch(() => {});
       return true;
     } catch {
       return true;
@@ -56,18 +49,13 @@ export class SyncLockManager {
    * Releases the synchronization lock if owned by this instance.
    */
   static releaseLock(): void {
-    if (typeof window === "undefined" || !window.localStorage) return;
-
     try {
-      const raw = localStorage.getItem(SYNC_LOCK_KEY);
-      if (raw) {
-        const lock: LockData = JSON.parse(raw);
-        if (lock.owner === this.lockOwnerId) {
-          localStorage.removeItem(SYNC_LOCK_KEY);
-        }
+      const lock = configurationService.getSync<LockData>(SYNC_LOCK_KEY);
+      if (lock && lock.owner === this.lockOwnerId) {
+        configurationService.delete(SYNC_LOCK_KEY).catch(() => {});
       }
     } catch {
-      localStorage.removeItem(SYNC_LOCK_KEY);
+      configurationService.delete(SYNC_LOCK_KEY).catch(() => {});
     }
   }
 

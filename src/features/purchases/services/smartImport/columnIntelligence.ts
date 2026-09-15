@@ -180,11 +180,24 @@ export class ColumnIntelligence {
     if (!header) return '';
     return header
       .toLowerCase()
+      .replace(/[٠۰]/g, '0')
+      .replace(/[١۱]/g, '1')
+      .replace(/[٢۲]/g, '2')
+      .replace(/[٣۳]/g, '3')
+      .replace(/[٤۴]/g, '4')
+      .replace(/[٥۵]/g, '5')
+      .replace(/[٦۶]/g, '6')
+      .replace(/[٧۷]/g, '7')
+      .replace(/[٨۸]/g, '8')
+      .replace(/[٩۹]/g, '9')
       .replace(/[_\-./\\:;,#|()[\]{}]/g, ' ')
       .replace(/[\u064B-\u065F\u0670]/g, '') // Remove Arabic tashkeel / diacritics
+      .replace(/\u0640/g, '') // Remove Tatweel
       .replace(/[\u0622\u0623\u0625\u0671]/g, 'ا') // Normalize alef variants
       .replace(/\u0629/g, 'ه') // Normalize taa marbuta to haa
       .replace(/\u0649/g, 'ي') // Normalize alef maksura to yaa
+      .replace(/\u0624/g, 'و') // Normalize waw with hamza
+      .replace(/\u0626/g, 'ي') // Normalize yaa with hamza
       .replace(/\s+/g, ' ')
       .trim();
   }

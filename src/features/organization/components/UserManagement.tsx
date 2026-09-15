@@ -6,10 +6,9 @@ import {
   X, Check, AlertCircle, RefreshCw
 } from 'lucide-react';
 import { TenantUserItem, RoleItem, PermissionDefinition } from '../types';
-import { useAuthStore } from '../../../store/authStore';
+import { unifiedTransport } from '@/shared/network/transport/unifiedTransport';
 
 export const UserManagement: React.FC = () => {
-  const { tenantId } = useAuthStore();
   const [users, setUsers] = useState<TenantUserItem[]>([]);
   const [roles, setRoles] = useState<RoleItem[]>([]);
   const [permissions, setPermissions] = useState<PermissionDefinition[]>([]);
@@ -32,41 +31,15 @@ export const UserManagement: React.FC = () => {
   const fetchUsersAndRoles = async () => {
     setIsLoading(true);
     try {
-      // 1. Fetch users
-      const usersRes = await fetch('/api/organization/users', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-          'x-tenant-id': tenantId || 'default-tenant'
-        }
-      });
-      if (usersRes.ok) {
-        const uData = await usersRes.json();
-        if (uData.data) setUsers(uData.data);
-      }
+      const [uData, rData, pData] = await Promise.all([
+        unifiedTransport.get<any>('/api/organization/users'),
+        unifiedTransport.get<any>('/api/rbac/roles'),
+        unifiedTransport.get<any>('/api/rbac/permissions')
+      ]);
 
-      // 2. Fetch roles
-      const rolesRes = await fetch('/api/rbac/roles', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-          'x-tenant-id': tenantId || 'default-tenant'
-        }
-      });
-      if (rolesRes.ok) {
-        const rData = await rolesRes.json();
-        if (rData.data) setRoles(rData.data);
-      }
-
-      // 3. Fetch all permissions
-      const permsRes = await fetch('/api/rbac/permissions', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-          'x-tenant-id': tenantId || 'default-tenant'
-        }
-      });
-      if (permsRes.ok) {
-        const pData = await permsRes.json();
-        if (pData.data?.permissions) setPermissions(pData.data.permissions);
-      }
+      if (uData && uData.data) setUsers(uData.data);
+      if (rData && rData.data) setRoles(rData.data);
+      if (pData && pData.data?.permissions) setPermissions(pData.data.permissions);
     } catch (err) {
       console.warn('[UserMgmt] Fetch error, using memory fallback:', err);
     } finally {
@@ -83,54 +56,30 @@ export const UserManagement: React.FC = () => {
     if (!newUsername.trim()) return;
 
     try {
-      const res = await fetch('/api/organization/users', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-          'x-tenant-id': tenantId || 'default-tenant'
-        },
-        body: JSON.stringify({
-          username: newUsername.trim(),
-          role: newRole,
-          branchId: newBranchId || null,
-          roleIds: [newRole]
-        })
+      await unifiedTransport.post('/api/organization/users', {
+        username: newUsername.trim(),
+        role: newRole,
+        branchId: newBranchId || null,
+        roleIds: [newRole]
       });
 
-      if (res.ok) {
-        setFeedback({ type: 'success', message: 'تم إنشاء المستخدم بنجاح وتعيين الصلاحيات الأولية.' });
-        setIsCreateModalOpen(false);
-        setNewUsername('');
-        fetchUsersAndRoles();
-      } else {
-        const errJson = await res.json();
-        setFeedback({ type: 'error', message: errJson.error || 'فشل إنشاء المستخدم' });
-      }
-    } catch {
-      setFeedback({ type: 'error', message: 'تعذر الاتصال بالخادم' });
+      setFeedback({ type: 'success', message: 'تم إنشاء المستخدم بنجاح وتعيين الصلاحيات الأولية.' });
+      setIsCreateModalOpen(false);
+      setNewUsername('');
+      fetchUsersAndRoles();
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message || 'فشل إنشاء المستخدم' });
     }
   };
 
   const handleToggleActive = async (user: TenantUserItem) => {
     try {
-      const res = await fetch(`/api/organization/users/${user.id}/status`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-          'x-tenant-id': tenantId || 'default-tenant'
-        },
-        body: JSON.stringify({ isActive: !user.isActive })
+      await unifiedTransport.put(`/api/organization/users/${user.id}/status`, { isActive: !user.isActive });
+      setUsers(users.map(u => u.id === user.id ? { ...u, isActive: !u.isActive } : u));
+      setFeedback({ 
+        type: 'success', 
+        message: !user.isActive ? `تم تفعيل حساب ${user.username}` : `تم تعطيل حساب ${user.username} وإلغاء جلساته النشطة`
       });
-
-      if (res.ok) {
-        setUsers(users.map(u => u.id === user.id ? { ...u, isActive: !u.isActive } : u));
-        setFeedback({ 
-          type: 'success', 
-          message: !user.isActive ? `تم تفعيل حساب ${user.username}` : `تم تعطيل حساب ${user.username} وإلغاء جلساته النشطة`
-        });
-      }
     } catch {
       setFeedback({ type: 'error', message: 'فشل تغيير حالة تفعيل المستخدم' });
     }
@@ -142,16 +91,7 @@ export const UserManagement: React.FC = () => {
     setUserOverrides({});
 
     try {
-      // Fetch user overrides
-      const res = await fetch(`/api/rbac/users/${user.id}/effective-permissions`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-          'x-tenant-id': tenantId || 'default-tenant'
-        }
-      });
-      if (res.ok) {
-        // Effective permissions loaded
-      }
+      await unifiedTransport.get(`/api/rbac/users/${user.id}/effective-permissions`);
     } catch (e) {
       console.warn('Could not load effective perms:', e);
     }
@@ -162,27 +102,11 @@ export const UserManagement: React.FC = () => {
     setIsSavingUser(true);
     try {
       // Update roles
-      await fetch(`/api/organization/users/${selectedUser.id}/roles`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-          'x-tenant-id': tenantId || 'default-tenant'
-        },
-        body: JSON.stringify({ roleIds: selectedUserRoles })
-      });
+      await unifiedTransport.post(`/api/organization/users/${selectedUser.id}/roles`, { roleIds: selectedUserRoles });
 
       // Save each override
       for (const [permKey, effect] of Object.entries(userOverrides)) {
-        await fetch(`/api/rbac/users/${selectedUser.id}/overrides`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('token') || 'local-admin-token'}`,
-            'x-tenant-id': tenantId || 'default-tenant'
-          },
-          body: JSON.stringify({ permissionKey: permKey, effect })
-        });
+        await unifiedTransport.post(`/api/rbac/users/${selectedUser.id}/overrides`, { permissionKey: permKey, effect });
       }
 
       setFeedback({ type: 'success', message: 'تم حفظ استثناءات وأدوار المستخدم بنجاح.' });

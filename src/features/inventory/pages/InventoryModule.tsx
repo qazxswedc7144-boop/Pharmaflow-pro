@@ -20,14 +20,16 @@ import { PullToRefresh } from '@/components/shared/PullToRefresh';
 
 import SupplierManagement from '@features/accounting/components/SupplierManagement';
 import { AutoReorderModal } from '../components/AutoReorderModal';
+import { ProductDrillDownModal } from '../components/ProductDrillDownModal';
 
-const InventoryModule: React.FC<{ onNavigate?: (view: string) => void }> = ({ onNavigate }) => {
+const InventoryModule: React.FC<{ onNavigate?: (view: string, params?: Record<string, unknown>) => void }> = ({ onNavigate }) => {
   const { products, categories } = useInventory();
   const { suppliers } = useAccounting();
   const { refreshGlobal, addToast, currency } = useUI();
   const containerRef = useRef<HTMLDivElement>(null);
   
   const [isLoading, setIsLoading] = useState(true);
+  const [drillDownProductId, setDrillDownProductId] = useState<string | null>(null);
 
   // Optimize loading state - use products.length as dependency to avoid flickering on reference changes
   useEffect(() => {
@@ -136,34 +138,54 @@ const InventoryModule: React.FC<{ onNavigate?: (view: string) => void }> = ({ on
     }
   };
 
-const ProductItem = React.memo(({ product, currency, onClick }: { product: Product, currency: string, onClick: () => void }) => {
+const ProductItem = React.memo(({ product, currency, onClick, onInspect }: { product: Product, currency: string, onClick: () => void, onInspect: (e: React.MouseEvent) => void }) => {
   const lastRealPurchasePrice = PurchaseRepository.getLastPurchasePriceForItem(product.id);
 
   return (
     <motion.div 
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className="bg-white border border-slate-100 rounded-[40px] h-full flex items-center justify-between px-10 shadow-sm hover:shadow-xl hover:border-[#1E4D4D]/20 transition-all group cursor-pointer active:scale-[0.99]"
+      className="bg-white border border-slate-100 rounded-[40px] h-full flex items-center justify-between px-8 sm:px-10 shadow-sm hover:shadow-xl hover:border-[#1E4D4D]/20 transition-all group cursor-pointer active:scale-[0.99]"
       onClick={onClick}
     >
-        <div className="flex items-center gap-8 flex-1">
-          <div className="w-16 h-16 bg-slate-50 text-[#1E4D4D] rounded-[24px] flex items-center justify-center text-2xl shadow-inner group-hover:scale-110 transition-transform">
+        <div className="flex items-center gap-6 sm:gap-8 flex-1">
+          <div className="w-14 sm:w-16 h-14 sm:h-16 bg-slate-50 text-[#1E4D4D] rounded-[24px] flex items-center justify-center text-2xl shadow-inner group-hover:scale-110 transition-transform">
             <Box size={28} />
           </div>
           <div className="min-w-0">
-            <h3 className="text-[11px] font-black text-[#1E4D4D] truncate leading-none mb-2">{product.name || product.Name}</h3>
-            <div className="flex items-center gap-4 flex-nowrap">
+            <h3 
+              onClick={(e) => {
+                e.stopPropagation();
+                onInspect(e);
+              }}
+              className="text-[12px] font-black text-[#1E4D4D] hover:text-emerald-700 hover:underline cursor-pointer truncate leading-none mb-2"
+              title="انقر لعرض تفاصيل التتبع والعملاء والموردين"
+            >
+              {product.name || product.Name}
+            </h3>
+            <div className="flex items-center gap-3 sm:gap-4 flex-nowrap">
                 <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest">ID: {product.id}</p>
                 <div className="w-1.5 h-1.5 bg-slate-200 rounded-full"></div>
-                <Badge variant={(product.stock || product.StockQuantity || 0) <= (product.MinLevel || 5) ? 'danger' : 'info'} className="!rounded-full px-3 py-0.5 text-[11px] font-black uppercase tracking-tight">
+                <Badge variant={(product.stock || product.StockQuantity || 0) <= (product.MinLevel || 5) ? 'danger' : 'info'} className="!rounded-full px-3 py-0.5 text-[10px] font-black uppercase tracking-tight">
                 {product.categoryName || 'بدون تصنيف'}
                 </Badge>
             </div>
           </div>
         </div>
         
-        <div className="flex items-center gap-16">
-          <div className="text-center hidden lg:block border-r border-slate-50 pr-12">
+        <div className="flex items-center gap-6 sm:gap-10">
+          {/* Smart Traceability & Audit Button */}
+          <button
+            type="button"
+            onClick={onInspect}
+            title="تتبع الصنف والموردين وحركات المخزون والمطابقة"
+            className="px-3.5 py-2 rounded-2xl bg-emerald-50 text-emerald-800 hover:bg-[#1E4D4D] hover:text-white border border-emerald-100/80 transition-all text-xs font-black flex items-center gap-1.5 shadow-sm active:scale-95 z-10"
+          >
+            <History size={14} />
+            <span className="hidden md:inline">تتبع ومطابقة</span>
+          </button>
+
+          <div className="text-center hidden lg:block border-r border-slate-50 pr-8">
               <p className="text-[11px] font-black text-slate-300 uppercase mb-1 tracking-tight flex items-center justify-center gap-2">
               <TrendingUp size={12}/> آخر تكلفة
               </p>
@@ -171,15 +193,15 @@ const ProductItem = React.memo(({ product, currency, onClick }: { product: Produ
                 {lastRealPurchasePrice ? `${lastRealPurchasePrice.toLocaleString()} ${currency}` : '---'}
               </p>
           </div>
-          <div className="text-center w-32">
+          <div className="text-center w-28 sm:w-32">
               <p className="text-[11px] font-black text-slate-300 uppercase mb-1 tracking-tight">الرصيد الحالي</p>
               <div className="flex items-center justify-center gap-2">
-                <p className={`text-[11px] font-black ${(product.stock || product.StockQuantity || 0) <= (product.MinLevel || 5) ? 'text-red-500' : 'text-[#1E4D4D]'}`}>{product.stock || product.StockQuantity}</p>
+                <p className={`text-[12px] font-black ${(product.stock || product.StockQuantity || 0) <= (product.MinLevel || 5) ? 'text-red-500' : 'text-[#1E4D4D]'}`}>{product.stock || product.StockQuantity}</p>
                 <span className="text-[11px] font-black text-slate-400 uppercase">{product.DefaultUnit || 'حبة'}</span>
               </div>
           </div>
-          <div className="w-12 h-12 bg-slate-50 text-slate-300 rounded-2xl flex items-center justify-center group-hover:bg-[#1E4D4D] group-hover:text-white transition-all shadow-sm">
-            <ChevronRight size={24} />
+          <div className="w-10 sm:w-12 h-10 sm:h-12 bg-slate-50 text-slate-300 rounded-2xl flex items-center justify-center group-hover:bg-[#1E4D4D] group-hover:text-white transition-all shadow-sm">
+            <ChevronRight size={22} />
           </div>
         </div>
     </motion.div>
@@ -332,6 +354,10 @@ const ProductItem = React.memo(({ product, currency, onClick }: { product: Produ
                       product={prod} 
                       currency={currency} 
                       onClick={() => handleProductClick(prod)}
+                      onInspect={(e) => {
+                        e.stopPropagation();
+                        setDrillDownProductId(prod.id);
+                      }}
                     />
                   </div>
                 );
@@ -629,6 +655,21 @@ const ProductItem = React.memo(({ product, currency, onClick }: { product: Produ
           refreshGlobal();
         }}
         onNavigateToPurchases={() => onNavigate?.('purchases')}
+      />
+
+      <ProductDrillDownModal
+        isOpen={!!drillDownProductId}
+        onClose={() => setDrillDownProductId(null)}
+        productId={drillDownProductId}
+        currency={currency}
+        onNavigateToInvoice={(invId, type) => {
+          setDrillDownProductId(null);
+          if (type === 'PURCHASE') {
+            onNavigate?.('purchases', { id: invId });
+          } else {
+            onNavigate?.('sales', { id: invId });
+          }
+        }}
       />
     </div>
   );

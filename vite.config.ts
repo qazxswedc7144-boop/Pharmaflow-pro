@@ -38,32 +38,17 @@ export default defineConfig(({ mode }) => {
           output: {
             manualChunks(id) {
               if (id.includes('node_modules')) {
-                if (id.includes('pdfjs-dist') || id.includes('jspdf') || id.includes('jspdf-autotable')) {
-                  return 'vendor-pdf';
-                }
-                if (id.includes('tesseract.js')) {
-                  return 'vendor-ocr';
-                }
-                if (id.includes('read-excel-file') || id.includes('jszip')) {
-                  return 'vendor-excel';
-                }
-                if (id.includes('recharts') || id.includes('d3') || id.includes('chart.js') || id.includes('react-chartjs-2')) {
-                  return 'vendor-charts';
+                if (id.includes('react/') || id.includes('react-dom/') || id.includes('react-router')) {
+                  return 'vendor-core';
                 }
                 if (id.includes('lucide-react')) {
                   return 'vendor-icons';
                 }
-                if (id.includes('motion') || id.includes('framer-motion')) {
-                  return 'vendor-motion';
-                }
                 if (id.includes('firebase')) {
                   return 'vendor-firebase';
                 }
-                if (id.includes('@google/genai')) {
-                  return 'vendor-gemini';
-                }
-                if (id.includes('dexie') || id.includes('zustand')) {
-                  return 'vendor-state';
+                if (id.includes('pdfjs-dist') || id.includes('jspdf') || id.includes('tesseract.js')) {
+                  return 'vendor-heavy';
                 }
               }
             }

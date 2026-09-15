@@ -1,5 +1,6 @@
 
 import { db } from '@/core/db';
+import { configurationService } from '@/services/config/configurationService';
 import { AccountingEntry, JournalLine, Sale, Purchase, InvoiceItem, UnifiedInvoice } from '@/types';
 import { CurrencyService } from '@/services/localization/CurrencyService';
 import { AccountingError } from '@/core/errors';
@@ -33,10 +34,10 @@ export class AccountingEngine {
 
   static async getCoreAccount(type: 'CASH' | 'BANK' | 'RECEIVABLE' | 'PAYABLE' | 'INVENTORY' | 'SALES_REVENUE' | 'COGS' | 'EXPENSE'): Promise<string> {
     try {
-      const setting = await db.settings.get(`ACCOUNT_${type}`);
-      if (setting) return setting.value;
+      const setting = await configurationService.get<any>(`ACCOUNT_${type}`);
+      if (setting) return typeof setting === 'string' ? setting : setting.value || setting;
     } catch (e) {
-      console.warn(`Error fetching ACCOUNT_${type} from Dexie:`, e);
+      console.warn(`Error fetching ACCOUNT_${type} from configurationService:`, e);
     }
 
     // Fallback to defaults if not configured
@@ -297,17 +298,21 @@ export class AccountingEngine {
       
       // Fallback to product default cost price if batch cost is missing
       if (unitCost === 0) {
-        try {
-          const product = await db.products.get(item.product_id);
-          if (product) {
-            unitCost = product.CostPrice || 0;
+        const prodId = (item as any).productId || item.product_id;
+        if (prodId) {
+          try {
+            const product = await db.products.get(prodId);
+            if (product) {
+              unitCost = product.CostPrice || (product as any).costPrice || 0;
+            }
+          } catch (e) {
+            console.warn("Error fetching product from Dexie:", e);
           }
-        } catch (e) {
-          console.warn("Error fetching product from Dexie:", e);
         }
       }
       
-      totalCOGS += (item.qty || 0) * unitCost;
+      const qty = item.qty || (item as any).quantity || 0;
+      totalCOGS += qty * unitCost;
     }
     return totalCOGS;
   }
@@ -365,14 +370,15 @@ export class AccountingEngine {
 
   private static async createLine(entryId: string, accountId: string, debit: number, credit: number): Promise<JournalLine> {
     const id = `JL-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+    const safeAccId = accountId || 'ACC-GENERIC';
     
     return {
       id,
       lineId: id,
       entryId,
       entry_id: entryId,
-      accountId,
-      account_id: accountId,
+      accountId: safeAccId,
+      account_id: safeAccId,
       accountName: 'حساب محلي',
       debit,
       credit,

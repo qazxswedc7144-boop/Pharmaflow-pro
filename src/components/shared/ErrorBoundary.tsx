@@ -1,5 +1,7 @@
 import React, { ErrorInfo, ReactNode } from 'react';
 import { Card, Button } from './SharedUI';
+import { configurationService } from '@/services/config/configurationService';
+import { observabilityService } from '@/core/observability/observabilityService';
 
 interface Props {
   children?: ReactNode;
@@ -35,18 +37,14 @@ class ErrorBoundary extends React.Component<Props, State> {
     // Fix: Accessing setState member of React Component instance using any casting to resolve Property does not exist error (Error line 36)
     (this as any).setState({ errorInfo });
     
-    try {
-      localStorage.setItem('last_critical_error', JSON.stringify({
-        message: error.message,
-        time: new Date().toISOString()
-      }));
-    } catch (e) {}
+    observabilityService.recordError(error, { feature: 'REACT_ERROR_BOUNDARY' }, 'UNKNOWN', 'CRITICAL').catch(() => {});
+    configurationService.set('last_critical_error', {
+      message: error.message,
+      time: new Date().toISOString()
+    }).catch(() => {});
   }
 
   private handleSafeRestart = () => {
-    try {
-      sessionStorage.clear();
-    } catch (e) {}
     window.location.reload();
   };
 

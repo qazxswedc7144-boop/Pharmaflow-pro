@@ -2,6 +2,7 @@
 import { db } from '@/core/db';
 import { Currency } from '@/types';
 import { eventBus, EVENTS } from '@/services/eventBus';
+import { configurationService } from '@/services/config/configurationService';
 
 export interface CurrencyMetadata {
   code: string;
@@ -18,19 +19,17 @@ export const KNOWN_CURRENCIES: Record<string, CurrencyMetadata> = {
 };
 
 export class CurrencyService {
-  private static ACTIVE_CURRENCY_KEY = 'ACTIVE_CURRENCY';
-  private static CURRENCY_NAME_KEY = 'ACTIVE_CURRENCY_NAME';
-
   /**
-   * Returns current active currency code synchronously from window or localStorage
+   * Returns current active currency code synchronously from configurationService or window
    */
   static getCurrentCurrencyCode(): string {
+    const cached = configurationService.getSync<string>('system.currency');
+    if (cached) return String(cached).toUpperCase();
+
     if (typeof window !== 'undefined') {
-      const cached = (window as any).currentSystemCurrency || 
-                     localStorage.getItem('pharmaflow_currency') || 
-                     localStorage.getItem('pharma_currency');
-      if (cached && typeof cached === 'string') {
-        return cached.toUpperCase();
+      const winVal = (window as any).currentSystemCurrency;
+      if (winVal && typeof winVal === 'string') {
+        return winVal.toUpperCase();
       }
     }
     return 'YER';
@@ -75,16 +74,12 @@ export class CurrencyService {
   }
 
   /**
-   * دالة تحديث العملة للنظام بالكامل
-   * @param {string} code - رمز العملة (مثل YER)
-   * @param {string} label - اسم العملة (مثل ريال يمني)
-   * @param {boolean} isNew - هل هي عملة جديدة تضاف لأول مرة؟
+   * Updates global system currency through configurationService
    */
   static async setGlobalCurrency(code: string, label?: string, isNew: boolean = false) {
     const upperCode = code.toUpperCase();
     const resolvedLabel = label || this.getCurrencyName(upperCode);
     
-    // 1. إذا كانت عملة جديدة، تضاف لقائمة العملات المتاحة مستقبلاً
     if (isNew) {
       const newCurrency: Currency = {
         id: db.generateId('CUR'),
@@ -97,22 +92,14 @@ export class CurrencyService {
       await db.saveCurrency(newCurrency);
     }
 
-    // 2. تعيين العملة كـ "عملة نشطة" للنظام بالكامل في الإعدادات
-    await db.runTransaction(async () => {
-      await db.saveSetting(this.ACTIVE_CURRENCY_KEY, upperCode);
-      await db.saveSetting('currency', upperCode);
-      await db.saveSetting(this.CURRENCY_NAME_KEY, resolvedLabel);
-      await db.saveSetting('currencyLabel', resolvedLabel);
-    }, ['settings']);
+    // Persist via configurationService
+    await configurationService.set('system.currency', upperCode);
+    await configurationService.set('system.currency_label', resolvedLabel);
 
-    // 3. تحديث الذاكرة المؤقتة (للتوافق مع الكود القديم إن وجد)
     if (typeof window !== 'undefined') {
       (window as any).currentSystemCurrency = upperCode;
-      localStorage.setItem('pharmaflow_currency', upperCode);
-      localStorage.setItem('pharma_currency', upperCode);
     }
 
-    // 4. إرسال حدث لتنبيه الواجهة بالتغيير
     eventBus.emit(EVENTS.CURRENCY_CHANGED, { code: upperCode, label: resolvedLabel });
     
     if (typeof document !== 'undefined') {
@@ -126,33 +113,27 @@ export class CurrencyService {
   }
 
   /**
-   * جلب العملة النشطة الحالية
+   * Get current active currency
    */
   static async getActiveCurrency(): Promise<{ code: string; label: string }> {
-    const code = await db.getSetting(this.ACTIVE_CURRENCY_KEY, 'YER');
-    const label = await db.getSetting(this.CURRENCY_NAME_KEY, 'ريال يمني');
+    const code = await configurationService.get<string>('system.currency') || 'YER';
+    const label = await configurationService.get<string>('system.currency_label') || 'ريال يمني';
     
-    // Update window cache
     if (typeof window !== 'undefined') {
       (window as any).currentSystemCurrency = code;
-      localStorage.setItem('pharmaflow_currency', code);
-      localStorage.setItem('pharma_currency', code);
     }
     
     return { code, label };
   }
 
   /**
-   * مراقب يقوم بتحديث الرموز في الواجهة تلقائياً
-   * في بيئة Dexie، نعتمد على eventBus بدلاً من onSnapshot
+   * Currency observer
    */
   static startCurrencyObserver(onUpdate: (code: string, label: string) => void) {
-    // جلب القيمة الحالية فوراً
     this.getActiveCurrency()
       .then(curr => onUpdate(curr.code, curr.label))
       .catch(err => console.error("[CurrencyService] Observer initial fetch failed:", err));
 
-    // الاشتراك في التغييرات المستقبلية
     return eventBus.subscribe(EVENTS.CURRENCY_CHANGED, (data: any) => {
       if (data && data.code) {
         onUpdate(data.code, data.label);
@@ -167,16 +148,15 @@ export class CurrencyService {
   }
 
   /**
-   * تحويل المبلغ إلى العملة الأساسية (Base Currency)
+   * Convert amount to base currency
    */
   static async convertToBase(amount: number, fromCurrency: string, date?: string) {
-    const baseCurrency = await db.getSetting('BASE_CURRENCY', 'YER');
+    const baseCurrency = await configurationService.get<string>('system.currency') || 'YER';
     
     if (fromCurrency === baseCurrency) {
       return { baseAmount: amount, rate: 1 };
     }
 
-    // البحث عن سعر الصرف في قاعدة البيانات
     const rates = await db.getExchangeRates(date);
     const rateEntry = rates.find((r: any) => r.fromCurrency === fromCurrency && r.toCurrency === baseCurrency);
     
@@ -184,7 +164,6 @@ export class CurrencyService {
       return { baseAmount: amount * rateEntry.rate, rate: rateEntry.rate };
     }
 
-    // سعر صرف افتراضي إذا لم يوجد (لأغراض العرض)
     const defaultRates: Record<string, number> = {
       'USD': 530,
       'SAR': 140,
@@ -198,19 +177,15 @@ export class CurrencyService {
   }
 
   /**
-   * تحويل المبلغ بين أي عملتين
+   * Convert amount between two currencies
    */
   static async convert(amount: number, from: string, to: string, date?: string) {
     if (from === to) return amount;
     
-    // convert from to base
     const fromToBase = await this.convertToBase(amount, from, date);
-    
-    // if to is base, return
-    const baseCurrency = await db.getSetting('BASE_CURRENCY', 'YER');
+    const baseCurrency = await configurationService.get<string>('system.currency') || 'YER';
     if (to === baseCurrency) return fromToBase.baseAmount;
     
-    // convert from base to to
     const rates = await db.getExchangeRates(date);
     const rateEntry = rates.find((r: any) => r.fromCurrency === baseCurrency && r.toCurrency === to);
     
@@ -218,7 +193,6 @@ export class CurrencyService {
       return fromToBase.baseAmount * rateEntry.rate;
     }
     
-    // Default fallback
     const defaultRates: Record<string, number> = {
       'USD': 530,
       'SAR': 140,
@@ -231,4 +205,5 @@ export class CurrencyService {
     return amount * rate;
   }
 }
+
 

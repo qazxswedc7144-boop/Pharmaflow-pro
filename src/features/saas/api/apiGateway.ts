@@ -1,5 +1,7 @@
 import { db } from '@/core/db';
 
+import { configurationService } from '@/services/config/configurationService';
+
 export interface ApiKeyConfig {
   id: string;
   name: string;
@@ -85,9 +87,9 @@ export class ApiGatewayService {
    * Retrieves keys linked dynamically to custom local-storage or index references
    */
   static async getTenantApiKeys(tenantId: string): Promise<ApiKeyConfig[]> {
-    const keyStr = localStorage.getItem(`pf_api_keys_${tenantId}`);
-    if (!keyStr) {
-      // Seed default developer keys for testing out-of-the-box integrations
+    const configKey = `saas.api_keys.${tenantId}`;
+    const keys = configurationService.getSync<ApiKeyConfig[]>(configKey);
+    if (!keys || keys.length === 0) {
       const defaultKeys: ApiKeyConfig[] = [
         {
           id: 'key-mouwasat',
@@ -114,27 +116,27 @@ export class ApiGatewayService {
           createdAt: new Date(Date.now() - 60 * 86400000).toISOString()
         }
       ];
-      localStorage.setItem(`pf_api_keys_${tenantId}`, JSON.stringify(defaultKeys));
+      await configurationService.set(configKey, defaultKeys);
       return defaultKeys;
     }
-    return JSON.parse(keyStr);
+    return keys;
   }
 
   private static async updateApiKeyStats(key: ApiKeyConfig, tenantId: string) {
     const keys = await this.getTenantApiKeys(tenantId);
     const updated = keys.map(k => k.id === key.id ? key : k);
-    localStorage.setItem(`pf_api_keys_${tenantId}`, JSON.stringify(updated));
+    await configurationService.set(`saas.api_keys.${tenantId}`, updated);
   }
 
   static async saveApiKey(key: ApiKeyConfig, tenantId: string) {
     const keys = await this.getTenantApiKeys(tenantId);
     keys.unshift(key);
-    localStorage.setItem(`pf_api_keys_${tenantId}`, JSON.stringify(keys));
+    await configurationService.set(`saas.api_keys.${tenantId}`, keys);
   }
 
   static async revokeApiKey(keyId: string, tenantId: string) {
     const keys = await this.getTenantApiKeys(tenantId);
     const updated = keys.map(k => k.id === keyId ? { ...k, status: 'REVOKED' as const } : k);
-    localStorage.setItem(`pf_api_keys_${tenantId}`, JSON.stringify(updated));
+    await configurationService.set(`saas.api_keys.${tenantId}`, updated);
   }
 }

@@ -10,6 +10,9 @@ export interface TenantContext {
   role?: string | null;
   subscriptionPlan?: string | null;
   isActive?: boolean;
+  correlationId?: string;
+  requestId?: string;
+  ipAddress?: string;
 }
 
 export const tenantStorage = new AsyncLocalStorage<TenantContext>();
@@ -27,6 +30,20 @@ export function getTenantContext(): TenantContext | undefined {
 export function getCurrentTenantId(fallback = "default-tenant"): string {
   const store = tenantStorage.getStore();
   return store?.tenantId || fallback;
+}
+
+/**
+ * Returns the current correlationId if available in context.
+ */
+export function getCorrelationId(): string | undefined {
+  return tenantStorage.getStore()?.correlationId;
+}
+
+/**
+ * Returns the current requestId if available in context.
+ */
+export function getRequestId(): string | undefined {
+  return tenantStorage.getStore()?.requestId;
 }
 
 /**

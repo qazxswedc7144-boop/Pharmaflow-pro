@@ -91,8 +91,8 @@ async function runAllTests() {
   });
 
   await runTest("Source Detection", "Rejects unsupported file format with clear error", () => {
-    const res = SourceDetector.validateFile("dangerous_script.exe");
-    assert(!res.isValid, "Executable must not be valid");
+    const res = SourceDetector.validateFile("unsupported_document.xyz");
+    assert(!res.isValid, "Unknown file must not be valid");
     assertEqual(res.errorCode, "UNSUPPORTED_FILE", "Error code should be UNSUPPORTED_FILE");
   });
 

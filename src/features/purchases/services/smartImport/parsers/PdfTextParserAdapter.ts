@@ -182,7 +182,7 @@ export class PdfTextParserAdapter implements ImportSourceParser {
 
       for (let r = headerRowIndex + 1; r < grid.length; r++) {
         const row = grid[r];
-        if (!row || row.length === 0 || SpreadsheetParser.isFooterOrSummaryRow(row)) continue;
+        if (!row || row.length === 0 || SpreadsheetParser.isFooterOrSummaryRow(row) || SpreadsheetParser.isRepeatedHeaderRow(row, headers)) continue;
 
         const cells: Record<string, unknown> = {};
         headers.forEach((_, idx) => {

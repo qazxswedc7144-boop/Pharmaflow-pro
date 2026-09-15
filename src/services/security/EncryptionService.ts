@@ -1,3 +1,5 @@
+import { unifiedTransport } from '@/shared/network/transport/unifiedTransport';
+
 export function uint8ArrayToHex(bytes: Uint8Array): string {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
@@ -24,16 +26,8 @@ export class EncryptionService {
     const jsonText = typeof data === 'string' ? data : JSON.stringify(data);
 
     try {
-      const response = await fetch('/api/security/encrypt-backup', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ text: jsonText, password }),
-      });
-
-      const result = await response.json();
-      if (!response.ok || result.status === 'error') {
+      const result = await unifiedTransport.post<any>('/api/security/encrypt-backup', { text: jsonText, password });
+      if (result.status === 'error') {
         throw new Error(result.message || 'Error occurred during backend backup encryption.');
       }
 
@@ -54,21 +48,14 @@ export class EncryptionService {
         throw new Error('DECRYPTION_FAILED: Missing cryptographic payload parameters (salt/iv/encrypted_data).');
       }
 
-      const response = await fetch('/api/security/decrypt-backup', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          salt: parsedObj.salt,
-          iv: parsedObj.iv,
-          encrypted_data: parsedObj.encrypted_data,
-          password,
-        }),
+      const result = await unifiedTransport.post<any>('/api/security/decrypt-backup', {
+        salt: parsedObj.salt,
+        iv: parsedObj.iv,
+        encrypted_data: parsedObj.encrypted_data,
+        password,
       });
 
-      const result = await response.json();
-      if (!response.ok || result.status === 'error') {
+      if (result.status === 'error') {
         throw new Error(result.message || 'Error occurred during backend backup decryption.');
       }
 

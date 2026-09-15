@@ -116,10 +116,18 @@ export class DocxParserAdapter implements ImportSourceParser {
         arrayBuffer = new TextEncoder().encode(file).buffer;
         fileSize = arrayBuffer.byteLength;
       }
+    } else if (file instanceof ArrayBuffer) {
+      arrayBuffer = file;
+      fileSize = file.byteLength;
+    } else if (file instanceof Uint8Array || (typeof Buffer !== 'undefined' && Buffer.isBuffer(file))) {
+      arrayBuffer = (file as Uint8Array).buffer.slice((file as Uint8Array).byteOffset, (file as Uint8Array).byteOffset + (file as Uint8Array).byteLength);
+      fileSize = (file as Uint8Array).byteLength;
+    } else if (file && typeof (file as any).arrayBuffer === 'function') {
+      fileName = (file as any).name || 'document.docx';
+      fileSize = (file as any).size || 0;
+      arrayBuffer = await (file as any).arrayBuffer();
     } else {
-      fileName = file.name;
-      fileSize = file.size;
-      arrayBuffer = await file.arrayBuffer();
+      throw new Error('نوع ملف Word غير مدعوم');
     }
 
     if (fileSize > IMPORT_LIMITS.MAX_DOCX_FILE_SIZE) {

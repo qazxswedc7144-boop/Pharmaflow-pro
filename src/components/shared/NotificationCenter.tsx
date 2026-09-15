@@ -26,9 +26,9 @@ const NotificationCenter: React.FC = () => {
   // جلب تنبيهات الأدوية
   const loadMedicineAlerts = useCallback(async () => {
     try {
-      const allAlerts = await db.getMedicineAlerts();
-      const visibleAlerts = allAlerts
-        .sort((a, b) => new Date(b.Date).getTime() - new Date(a.Date).getTime());
+      const allAlerts = (await db.getMedicineAlerts()) || [];
+      const visibleAlerts = [...allAlerts]
+        .sort((a, b) => new Date(b.Date || b.date || b.timestamp || 0).getTime() - new Date(a.Date || a.date || a.timestamp || 0).getTime());
       setMedicineAlerts(visibleAlerts);
     } catch (e) {
       console.error("[NotificationCenter] Error loading medicine alerts:", e);

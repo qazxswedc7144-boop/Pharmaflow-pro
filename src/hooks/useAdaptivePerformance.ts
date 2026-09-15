@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { settingsService } from '@/features/settings/data/SettingsService';
+import { configurationService } from '@/services/config/configurationService';
 
 export interface PerformanceSpecs {
   hardwareConcurrency: number; // CPU Cores
@@ -117,11 +118,11 @@ export function useAdaptivePerformance() {
         // Safe-catch if browser requires flags for gc
       }
     }
-    // Clean up large localStorage caches if any
+    // Clean up large configurationService caches if any
     const keysToClean = ['pharmaflow_temp_pdf', 'pharmaflow_invoice_draft_temp'];
     keysToClean.forEach(k => {
       try {
-        localStorage.removeItem(k);
+        configurationService.delete(k).catch(() => {});
       } catch (e) {}
     });
   }, []);

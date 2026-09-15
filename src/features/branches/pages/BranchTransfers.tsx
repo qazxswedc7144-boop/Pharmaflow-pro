@@ -1,80 +1,104 @@
-// src/modules/branches/pages/BranchTransfers.tsx
+// src/features/branches/pages/BranchTransfers.tsx
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  ArrowLeftRight,
+  Clock3,
+  CheckCircle2,
+  Truck,
+  Building2,
+  AlertTriangle,
+  Search,
+  Plus,
+  Trash2,
+  RefreshCw,
+  Send,
+  XCircle,
+  Eye,
+  FileText
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 import { BranchService } from '../services/BranchService';
 import { Branch, TransferStatus } from '@/types';
 import { useUI } from '@/contexts/AppContext';
-import { 
-  ArrowRightLeft, Eye, Truck, Trash2, X, RotateCw, CheckCircle2, Ban,
-  PlusCircle, Clock, History, PackageCheck
-} from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { authService } from '@features/auth/services/authService';
 import { BackButton } from '@/components/shared/BackButton';
 
-interface BranchTransfersProps {
-  onNavigate?: (view: string, params?: any) => void;
-  initialTab?: 'LIST' | 'CREATE';
-  initialStatus?: 'ALL' | 'PENDING' | 'IN_TRANSIT' | 'RECEIVED';
+interface TransferItemDraft {
+  productId: string;
+  name: string;
+  barcode?: string;
+  quantity: number;
+  availableStock: number;
+  batchNumber?: string;
+  expiryDate?: string;
 }
 
-export const BranchTransfers: React.FC<BranchTransfersProps> = ({ 
-  onNavigate, 
-  initialTab = 'LIST', 
-  initialStatus = 'ALL' 
-}) => {
+export const BranchTransfers: React.FC<{ onNavigate?: (view: string) => void }> = ({ onNavigate }) => {
   const { addToast } = useUI();
+  const [activeTab, setActiveTab] = useState<'NEW' | 'HISTORY'>('NEW');
+
+  // Branch data
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [sourceBranch, setSourceBranch] = useState<string>('');
+  const [destinationBranch, setDestinationBranch] = useState<string>('');
+  
+  // Products & Inventory for selected source branch
+  const [branchInventory, setBranchInventory] = useState<any[]>([]);
+  const [selectedProductId, setSelectedProductId] = useState<string>('');
+  const [productSearch, setProductSearch] = useState<string>('');
+  const [quantity, setQuantity] = useState<number>(1);
+  const [batchNumber, setBatchNumber] = useState<string>('');
+  const [reason, setReason] = useState<string>('');
+
+  // Draft items for new transfer
+  const [items, setItems] = useState<TransferItemDraft[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [isLoadingData, setIsLoadingData] = useState<boolean>(true);
+
+  // Transfers history
   const [transfers, setTransfers] = useState<any[]>([]);
-  const [products, setProducts] = useState<any[]>([]);
-  
-  const [isLoading, setIsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'LIST' | 'CREATE'>(initialTab);
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'PENDING' | 'IN_TRANSIT' | 'RECEIVED'>(initialStatus);
+  const [statusFilter, setStatusFilter] = useState<string>('ALL');
+  const [selectedTransferDetails, setSelectedTransferDetails] = useState<{ transfer: any; items: any[] } | null>(null);
 
-  useEffect(() => {
-    if (initialTab) setActiveTab(initialTab);
-  }, [initialTab]);
-
-  useEffect(() => {
-    if (initialStatus) setStatusFilter(initialStatus);
-  }, [initialStatus]);
-
-  // Form State
-  const [sourceBranchId, setSourceBranchId] = useState('');
-  const [targetBranchId, setTargetBranchId] = useState('');
-  const [reason, setReason] = useState('');
-  const [transferItems, setTransferItems] = useState<{ productId: string; name: string; qty: number }[]>([]);
-  const [selectedProductId, setSelectedProductId] = useState('');
-  const [selectedProductQty, setSelectedProductQty] = useState(10);
-
-  // Transfer Details modal
-  const [activeDetailsId, setActiveDetailsId] = useState<string | null>(null);
-  const [details, setDetails] = useState<{ transfer: any; items: any[] } | null>(null);
-  
-  // Real Receive items popup state
-  const [isReceiving, setIsReceiving] = useState(false);
-  const [receivedQtys, setReceivedQtys] = useState<Record<string, number>>({});
-
+  // 1. Initial Data Fetch
   const loadInitialData = async () => {
-    setIsLoading(true);
+    setIsLoadingData(true);
     try {
-      const branchesList = await BranchService.getBranches();
-      setBranches(branchesList);
-      
-      const transfersList = await BranchService.getTransfers();
-      setTransfers(transfersList);
-
-      const productsList = await (await import('@/core/db')).db.products.toArray();
-      setProducts(productsList);
-
-      if (branchesList && branchesList.length >= 2) {
-        setSourceBranchId(branchesList[0]?.id || "");
-        setTargetBranchId(branchesList[1]?.id || "");
+      const branchList = await BranchService.getBranches();
+      setBranches(branchList);
+      if (branchList && branchList.length >= 2 && branchList[0] && branchList[1]) {
+        setSourceBranch(branchList[0].id);
+        setDestinationBranch(branchList[1].id);
+      } else if (branchList && branchList.length === 1 && branchList[0]) {
+        setSourceBranch(branchList[0].id);
       }
+      await loadTransfersList();
     } catch {
-      addToast("حدث خطأ أثناء تحميل البيانات المبدئية", "error");
+      addToast('فشل تحميل بيانات الفروع', 'error');
     } finally {
-      setIsLoading(false);
+      setIsLoadingData(false);
+    }
+  };
+
+  // 2. Load inventory when source branch changes
+  const loadSourceBranchInventory = async (branchId: string) => {
+    if (!branchId) return;
+    try {
+      const inv = await BranchService.getBranchInventory(branchId);
+      setBranchInventory(inv);
+    } catch {
+      addToast('فشل تحميل مخزون فرع المصدر', 'error');
+    }
+  };
+
+  // 3. Load transfers history
+  const loadTransfersList = async () => {
+    try {
+      const transferList = await BranchService.getTransfers();
+      setTransfers(transferList.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+    } catch {
+      addToast('فشل تحميل سجل التحويلات', 'error');
     }
   };
 
@@ -82,369 +106,441 @@ export const BranchTransfers: React.FC<BranchTransfersProps> = ({
     loadInitialData();
   }, []);
 
-  const handleAddProductToTransfer = () => {
-    if (!selectedProductId) return;
-    const prod = products.find(p => p.id === selectedProductId);
-    if (!prod) return;
+  useEffect(() => {
+    if (sourceBranch) {
+      loadSourceBranchInventory(sourceBranch);
+      // Reset selected item if source changes
+      setSelectedProductId('');
+      setItems([]);
+    }
+  }, [sourceBranch]);
 
-    // Check if duplicate
-    const exists = transferItems.find(itm => itm.productId === selectedProductId);
-    if (exists) {
-      addToast("هذا المنتج مضاف مسبقاً للطلب البيني", "warning");
+  // Selected product details
+  const currentProduct = useMemo(() => {
+    return branchInventory.find(item => item.productId === selectedProductId);
+  }, [selectedProductId, branchInventory]);
+
+  // Filtered inventory options for search dropdown
+  const filteredProducts = useMemo(() => {
+    const q = productSearch.trim().toLowerCase();
+    if (!q) return branchInventory;
+    return branchInventory.filter(p => 
+      (p.productName || '').toLowerCase().includes(q) ||
+      (p.barcode || '').toLowerCase().includes(q)
+    );
+  }, [productSearch, branchInventory]);
+
+  // Add Item to draft
+  const handleAddItem = () => {
+    if (!currentProduct) {
+      addToast('يرجى اختيار المستحضر الدوائي أولاً', 'warning');
+      return;
+    }
+    if (quantity <= 0) {
+      addToast('الرجاء تحديد كمية صالحة أكبر من الصفر', 'warning');
       return;
     }
 
-    setTransferItems([
-      ...transferItems,
-      { productId: selectedProductId, name: prod.name, qty: selectedProductQty }
-    ]);
+    const available = currentProduct.stockQuantity || 0;
+    const existingIndex = items.findIndex(i => i.productId === currentProduct.productId);
+    const existingItem = existingIndex >= 0 ? items[existingIndex] : undefined;
+    const alreadySelectedQty = existingItem ? existingItem.quantity : 0;
+    const totalQty = alreadySelectedQty + quantity;
+
+    if (totalQty > available) {
+      addToast(`الكمية المطلوبة (${totalQty}) تتجاوز الرصيد المتوفر بالفرع (${available})`, 'error');
+      return;
+    }
+
+    if (existingIndex >= 0 && existingItem) {
+      const updated = [...items];
+      updated[existingIndex] = {
+        ...existingItem,
+        quantity: totalQty
+      };
+      setItems(updated);
+    } else {
+      setItems([
+        ...items,
+        {
+          productId: currentProduct.productId,
+          name: currentProduct.productName,
+          barcode: currentProduct.barcode,
+          quantity,
+          availableStock: available,
+          batchNumber: batchNumber.trim() || 'BATCH-AUTO',
+          expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
+        }
+      ]);
+    }
+
     setSelectedProductId('');
-    setSelectedProductQty(10);
+    setProductSearch('');
+    setQuantity(1);
+    setBatchNumber('');
+    addToast('تمت إضافة الصنف إلى مسودة النقل', 'info');
   };
 
-  const handleRemoveProductFromTransfer = (idx: number) => {
-    setTransferItems(transferItems.filter((_, i) => i !== idx));
+  const handleRemoveItem = (productId: string) => {
+    setItems(items.filter(i => i.productId !== productId));
   };
 
-  const handleCreateTransferRequest = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (sourceBranchId === targetBranchId) {
-      addToast("لا يمكن النقل بين نفس الفرع", "warning");
+  // Swap Branches
+  const handleSwapBranches = () => {
+    const prevSrc = sourceBranch;
+    const prevDst = destinationBranch;
+    setSourceBranch(prevDst);
+    setDestinationBranch(prevSrc);
+  };
+
+  // Submit Transfer Workflow
+  const handleCreateTransfer = async () => {
+    if (!sourceBranch || !destinationBranch) {
+      addToast('يرجى تحديد فرع المصدر وفرع الوجهة', 'warning');
       return;
     }
-    if (transferItems.length === 0) {
-      addToast("يرجى إضافة صنف واحد على الأقل للمستند", "warning");
+    if (sourceBranch === destinationBranch) {
+      addToast('لا يمكن إجراء تحويل بين نفس الفرع', 'warning');
+      return;
+    }
+    if (items.length === 0) {
+      addToast('يرجى إضافة صنف واحد على الأقل للتحويل', 'warning');
       return;
     }
 
+    setIsSubmitting(true);
     try {
+      const user = authService.getCurrentUser();
+      const username = user?.User_Name || user?.User_Email || 'مستخدم النظام';
+
+      const transferItems = items.map(item => ({
+        productId: item.productId,
+        qty: item.quantity,
+        batchNumber: item.batchNumber,
+        expiryDate: item.expiryDate
+      }));
+
       await BranchService.createTransfer(
-        sourceBranchId,
-        targetBranchId,
+        sourceBranch,
+        destinationBranch,
         transferItems,
-        reason,
-        "إدارة المخزون السيادي"
+        reason || 'تحويل وموازنة مخزون دوائي',
+        username
       );
-      addToast("تم تسجيل طلب المناقلة البينية بنجاح في صيغة مسودة", "success");
-      setTransferItems([]);
+
+      addToast('تم إنشاء طلب التحويل المخزني بنجاح', 'success');
+      setItems([]);
       setReason('');
-      setActiveTab('LIST');
-      loadInitialData();
-    } catch {
-      addToast("فشل إرسال طلب المناقلة البينية", "error");
+      await loadTransfersList();
+      await loadSourceBranchInventory(sourceBranch);
+      setActiveTab('HISTORY');
+    } catch (err: any) {
+      addToast(err.message || 'فشل إنشاء طلب التحويل', 'error');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const handleViewDetails = async (id: string) => {
+  // Status transitions
+  const handleUpdateStatus = async (transferId: string, newStatus: TransferStatus) => {
     try {
-      const info = await BranchService.getTransferDetails(id);
-      setDetails(info);
-      setActiveDetailsId(id);
-    } catch {
-      addToast("فشل تحميل تفاصيل طلب المناقلة", "error");
-    }
-  };
-
-  const handleTransitionStatus = async (id: string, nextStatus: TransferStatus) => {
-    try {
-      if (nextStatus === "RECEIVED") {
-        // Must show receipt confirm modal
-        setIsReceiving(true);
-        const info = await BranchService.getTransferDetails(id);
-        const initialReceipts: Record<string, number> = {};
-        info.items.forEach(itm => {
-          initialReceipts[itm.id] = itm.qty;
-        });
-        setReceivedQtys(initialReceipts);
-        setDetails(info);
-        return;
+      const user = authService.getCurrentUser();
+      const username = user?.User_Name || user?.User_Email || 'المسؤول';
+      await BranchService.updateTransferStatus(transferId, newStatus, username);
+      addToast(`تم تحديث حالة التحويل إلى [${getStatusLabel(newStatus)}] بنجاح`, 'success');
+      await loadTransfersList();
+      if (sourceBranch) {
+        await loadSourceBranchInventory(sourceBranch);
       }
-
-      await BranchService.updateTransferStatus(id, nextStatus, "مشرف مستودع الفروع");
-      addToast(`تم تغيير حالة الطلب بنجاح إلى: ${nextStatus === 'APPROVED' ? 'معتمد' : nextStatus === 'IN_TRANSIT' ? 'في الطريق' : 'ملغي'}`, "success");
-      
-      // Reload details if modal is open
-      if (activeDetailsId === id) {
-        const info = await BranchService.getTransferDetails(id);
-        setDetails(info);
+      if (selectedTransferDetails?.transfer?.id === transferId) {
+        handleViewDetails(transferId);
       }
-      
-      loadInitialData();
-    } catch {
-      addToast("حدث خطأ أثناء الانتقال بحالة المستند البيني", "error");
+    } catch (err: any) {
+      addToast(err.message || 'فشل تحديث حالة التحويل', 'error');
     }
   };
 
-  const handleConfirmReceipt = async () => {
-    if (!details?.transfer?.id) return;
+  // View Details
+  const handleViewDetails = async (transferId: string) => {
     try {
-      await BranchService.updateTransferStatus(
-        details.transfer.id,
-        "RECEIVED",
-        "أمين مستودع الفرع المستلم",
-        receivedQtys
-      );
-      addToast("تم تأكيد الاستلام الفعلي وإدخال المخزون للفرع المستلم", "success");
-      setIsReceiving(false);
-      setActiveDetailsId(null);
-      setDetails(null);
-      loadInitialData();
+      const details = await BranchService.getTransferDetails(transferId);
+      setSelectedTransferDetails(details);
     } catch {
-      addToast("فشل تسجيل عملية استلام المناقلة", "error");
+      addToast('فشل استرجاع تفاصيل التحويل', 'error');
     }
   };
 
-  const filteredTransfers = transfers.filter(item => {
-    if (statusFilter === 'PENDING') return item.status === 'DRAFT' || item.status === 'APPROVED';
-    if (statusFilter === 'IN_TRANSIT') return item.status === 'IN_TRANSIT';
-    if (statusFilter === 'RECEIVED') return item.status === 'RECEIVED';
-    return true;
-  });
-
-  const pendingCount = transfers.filter(t => t.status === 'DRAFT' || t.status === 'APPROVED').length;
-  const inTransitCount = transfers.filter(t => t.status === 'IN_TRANSIT').length;
-  const receivedCount = transfers.filter(t => t.status === 'RECEIVED').length;
-  const allCount = transfers.length;
+  // Helpers
+  const getStatusLabel = (status: TransferStatus) => {
+    switch (status) {
+      case 'DRAFT': return 'مسودة';
+      case 'APPROVED': return 'معتمد ومؤكد';
+      case 'IN_TRANSIT': return 'قيد الشحن / بالطريق';
+      case 'RECEIVED': return 'تم الاستلام والتسوية';
+      case 'CANCELLED': return 'ملغي';
+      default: return status;
+    }
+  };
 
   const getStatusBadge = (status: TransferStatus) => {
     switch (status) {
-      case "DRAFT":
-        return <span className="bg-amber-50 text-amber-700 px-3 py-1 pb-1.5 rounded-full text-[10px] font-black border border-amber-200">مسودة</span>;
-      case "APPROVED":
-        return <span className="bg-[#1E4D4D]/10 text-[#1E4D4D] px-3 py-1 pb-1.5 rounded-full text-[10px] font-black border border-[#1E4D4D]/20">معتمد</span>;
-      case "IN_TRANSIT":
-        return <span className="bg-blue-50 text-blue-700 px-3 py-1 pb-1.5 rounded-full text-[10px] font-black border border-blue-200">في الطريق</span>;
-      case "RECEIVED":
-        return <span className="bg-emerald-50 text-emerald-700 px-3 py-1 pb-1.5 rounded-full text-[10px] font-black border border-emerald-200">مستلم فعلياً</span>;
-      case "CANCELLED":
-        return <span className="bg-rose-50 text-rose-700 px-3 py-1 pb-1.5 rounded-full text-[10px] font-black border border-rose-200">ملغي</span>;
+      case 'DRAFT':
+        return <span className="bg-slate-100 text-slate-700 font-bold px-2.5 py-1 rounded-full text-xs flex items-center gap-1"><Clock3 size={12} /> مسودة</span>;
+      case 'APPROVED':
+        return <span className="bg-blue-100 text-blue-800 font-bold px-2.5 py-1 rounded-full text-xs flex items-center gap-1"><CheckCircle2 size={12} /> معتمد</span>;
+      case 'IN_TRANSIT':
+        return <span className="bg-amber-100 text-amber-800 font-bold px-2.5 py-1 rounded-full text-xs flex items-center gap-1"><Truck size={12} /> قيد الشحن</span>;
+      case 'RECEIVED':
+        return <span className="bg-emerald-100 text-emerald-800 font-bold px-2.5 py-1 rounded-full text-xs flex items-center gap-1"><CheckCircle2 size={12} /> تم الاستلام</span>;
+      case 'CANCELLED':
+        return <span className="bg-rose-100 text-rose-800 font-bold px-2.5 py-1 rounded-full text-xs flex items-center gap-1"><XCircle size={12} /> ملغي</span>;
       default:
-        return null;
+        return <span className="bg-slate-100 text-slate-700 font-bold px-2.5 py-1 rounded-full text-xs">{status}</span>;
     }
   };
 
-  return (
-    <div className="space-y-6 w-full" dir="rtl">
-      {/* Upper Banner & Navigation Switcher */}
-      <div className="bg-white rounded-[32px] p-5 sm:p-6 border border-slate-100 shadow-md w-full">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          <div className="flex items-center gap-3">
-            {onNavigate && (
-              <BackButton onClick={() => onNavigate('dashboard')} />
-            )}
-            <div className="p-3.5 bg-emerald-50 text-emerald-700 rounded-2xl shadow-inner shrink-0">
-              <ArrowRightLeft size={22} />
-            </div>
-            <div>
-              <h1 className="text-xl font-black text-[#1E4D4D]">المناقلات والتحويلات البينية</h1>
-              <p className="text-xs text-slate-400 font-bold mt-0.5">تحويل المخزون الدوائي وموازنة الإمدادات بين الفروع والصيدليات الفرعية</p>
-            </div>
-          </div>
+  const filteredTransfers = useMemo(() => {
+    if (statusFilter === 'ALL') return transfers;
+    return transfers.filter(t => t.status === statusFilter);
+  }, [transfers, statusFilter]);
 
-          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-            <button
-              onClick={() => setActiveTab('CREATE')}
-              className={`flex items-center gap-2 px-4 py-3 rounded-2xl text-xs font-black transition-all ${activeTab === 'CREATE' ? 'bg-[#1E4D4D] text-white shadow-lg' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}
-            >
-              <PlusCircle size={15} />
-              <span>إنشاء تحويل جديد</span>
-            </button>
-            <button
-              onClick={() => { setActiveTab('LIST'); setStatusFilter('PENDING'); }}
-              className={`flex items-center gap-2 px-4 py-3 rounded-2xl text-xs font-black transition-all ${activeTab === 'LIST' && statusFilter === 'PENDING' ? 'bg-[#1E4D4D] text-white shadow-lg' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}
-            >
-              <Clock size={15} />
-              <span>التحويلات المعلقة</span>
-              <span className={`px-2 py-0.5 rounded-full text-[10px] ${activeTab === 'LIST' && statusFilter === 'PENDING' ? 'bg-white/20 text-white' : 'bg-amber-100 text-amber-800'}`}>{pendingCount}</span>
-            </button>
-            <button
-              onClick={() => { setActiveTab('LIST'); setStatusFilter('IN_TRANSIT'); }}
-              className={`flex items-center gap-2 px-4 py-3 rounded-2xl text-xs font-black transition-all ${activeTab === 'LIST' && statusFilter === 'IN_TRANSIT' ? 'bg-[#1E4D4D] text-white shadow-lg' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}
-            >
-              <Truck size={15} />
-              <span>قيد الشحن / النقل</span>
-              <span className={`px-2 py-0.5 rounded-full text-[10px] ${activeTab === 'LIST' && statusFilter === 'IN_TRANSIT' ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-800'}`}>{inTransitCount}</span>
-            </button>
-            <button
-              onClick={() => { setActiveTab('LIST'); setStatusFilter('RECEIVED'); }}
-              className={`flex items-center gap-2 px-4 py-3 rounded-2xl text-xs font-black transition-all ${activeTab === 'LIST' && statusFilter === 'RECEIVED' ? 'bg-[#1E4D4D] text-white shadow-lg' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}
-            >
-              <PackageCheck size={15} />
-              <span>التحويلات المستلمة</span>
-              <span className={`px-2 py-0.5 rounded-full text-[10px] ${activeTab === 'LIST' && statusFilter === 'RECEIVED' ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'}`}>{receivedCount}</span>
-            </button>
-            <button
-              onClick={() => { setActiveTab('LIST'); setStatusFilter('ALL'); }}
-              className={`flex items-center gap-2 px-4 py-3 rounded-2xl text-xs font-black transition-all ${activeTab === 'LIST' && statusFilter === 'ALL' ? 'bg-[#1E4D4D] text-white shadow-lg' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}
-            >
-              <History size={15} />
-              <span>سجل التحويلات</span>
-              <span className={`px-2 py-0.5 rounded-full text-[10px] ${activeTab === 'LIST' && statusFilter === 'ALL' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'}`}>{allCount}</span>
-            </button>
+  const pendingTransfersCount = useMemo(() => {
+    return transfers.filter(t => t.status === 'DRAFT' || t.status === 'APPROVED' || t.status === 'IN_TRANSIT').length;
+  }, [transfers]);
+
+  return (
+    <div dir="rtl" className="w-full space-y-6 pb-12 font-sans">
+      {/* 1. Header Banner */}
+      <div className="bg-gradient-to-br from-[#0c312d] via-[#0f3834] to-[#08221f] rounded-[28px] p-5 sm:p-6 text-white shadow-xl relative overflow-hidden w-full">
+        <div className="absolute left-0 top-0 w-48 h-48 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute right-0 bottom-0 w-48 h-48 bg-teal-500/5 rounded-full blur-2xl pointer-events-none" />
+
+        <div className="flex justify-between items-start gap-4 mb-6 relative z-10">
+          <div className="flex items-start gap-3 flex-1">
+            {onNavigate && (
+              <BackButton onClick={() => onNavigate('dashboard')} variant="emerald" />
+            )}
+            <div>
+              <h1 className="text-xl md:text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+                المناقلات والتحويلات المخزنية البينية
+              </h1>
+              <p className="text-xs md:text-sm text-emerald-200/90 font-medium mt-1.5 leading-relaxed">
+                تحويل المخزون الدوائي وموازنة الإمدادات بين الفروع والمستودعات مع تدقيق كامل لطبقات المخزون
+              </p>
+            </div>
           </div>
+          <div className="w-12 h-12 md:w-14 md:h-14 bg-emerald-500/20 border border-emerald-500/30 rounded-2xl flex items-center justify-center text-emerald-300 shrink-0 shadow-inner">
+            <ArrowLeftRight size={26} />
+          </div>
+        </div>
+
+        {/* Action / Tabs Row */}
+        <div className="flex flex-wrap items-center gap-3 relative z-10">
+          <button
+            onClick={() => setActiveTab('NEW')}
+            className={`font-bold text-xs md:text-sm px-6 py-3.5 rounded-2xl transition-all flex items-center gap-2 cursor-pointer ${
+              activeTab === 'NEW'
+                ? 'bg-[#00c88c] text-white shadow-lg shadow-emerald-500/20 scale-[1.02]'
+                : 'bg-emerald-900/40 hover:bg-emerald-900/60 text-emerald-100 border border-emerald-700/50'
+            }`}
+          >
+            <Plus size={18} />
+            <span>إنشاء مناقلة جديدة</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('HISTORY')}
+            className={`font-bold text-xs md:text-sm px-6 py-3.5 rounded-2xl transition-all flex items-center gap-2 cursor-pointer ${
+              activeTab === 'HISTORY'
+                ? 'bg-[#00c88c] text-white shadow-lg shadow-emerald-500/20 scale-[1.02]'
+                : 'bg-emerald-900/40 hover:bg-emerald-900/60 text-emerald-100 border border-emerald-700/50'
+            }`}
+          >
+            <FileText size={18} />
+            <span>سجل التحويلات والعمليات</span>
+            {pendingTransfersCount > 0 && (
+              <span className="bg-amber-400 text-slate-900 text-xs px-2 py-0.5 rounded-full font-black">
+                {pendingTransfersCount}
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={loadInitialData}
+            title="تحديث البيانات"
+            className="w-12 h-12 bg-emerald-900/40 hover:bg-emerald-900/60 border border-emerald-700/50 rounded-2xl flex items-center justify-center text-white transition-all cursor-pointer mr-auto"
+          >
+            <RefreshCw size={18} className={isLoadingData ? 'animate-spin' : ''} />
+          </button>
         </div>
       </div>
 
-      {isLoading ? (
-        <div className="flex items-center justify-center p-12">
-          <div className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
-        </div>
-      ) : activeTab === 'LIST' ? (
-        /* TRANSFERS LIST TAB */
-        <div className="bg-white rounded-[32px] border border-slate-100 shadow-md overflow-hidden">
-          <div className="p-6 border-b border-slate-50 flex items-center justify-between">
-            <h2 className="text-base font-black text-[#1E4D4D]">حركة التحويلات الصادرة والواردة</h2>
-            <button 
-              onClick={loadInitialData}
-              className="p-3 bg-slate-50 hover:bg-slate-100 text-slate-500 rounded-xl transition-all"
-            >
-              <RotateCw size={14} />
-            </button>
-          </div>
-
-          {filteredTransfers.length === 0 ? (
-            <div className="p-12 text-center text-slate-400 font-bold">
-              لا توجد مناقلات مسجلة بهذه الحالة بين الفروع.
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-right text-sm">
-                <thead>
-                  <tr className="bg-slate-50/75 text-slate-500 font-black text-xs border-b border-slate-100">
-                    <th className="p-4">رقم التحويل</th>
-                    <th className="p-4">المرسل (المصدر)</th>
-                    <th className="p-4">المستقبل (الوجهة)</th>
-                    <th className="p-4">حالة الطلب</th>
-                    <th className="p-4">تاريخ الطلب</th>
-                    <th className="p-4">بواسطة</th>
-                    <th className="p-4 text-center">الإجراءات</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 font-semibold text-slate-700">
-                  {filteredTransfers.map((item) => (
-                    <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
-                      <td className="p-4 font-black text-slate-800">{item.transferNumber}</td>
-                      <td className="p-4">{item.sourceName}</td>
-                      <td className="p-4">{item.targetName}</td>
-                      <td className="p-4">{getStatusBadge(item.status)}</td>
-                      <td className="p-4 text-xs text-slate-500">{new Date(item.createdAt).toLocaleDateString("ar-SA")}</td>
-                      <td className="p-4 text-xs">{item.createdBy || "-"}</td>
-                      <td className="p-4 flex justify-center gap-2">
-                        <button
-                          onClick={() => handleViewDetails(item.id)}
-                          className="px-4 py-2 bg-[#1E4D4D]/5 hover:bg-[#1E4D4D]/10 text-[#1E4D4D] font-black text-xs rounded-xl transition-all flex items-center gap-1"
-                        >
-                          <Eye size={12} />
-                          <span>عرض وتغيير الحالة</span>
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      ) : (
-        /* CREATE TRANSFER FORM TAB */
+      {/* 2. Content Sections */}
+      {activeTab === 'NEW' ? (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="bg-white rounded-[32px] p-6 border border-slate-100 shadow-md lg:col-span-2 space-y-6">
-            <div className="border-b border-slate-100 pb-4">
-              <h3 className="text-base font-black text-slate-800">بيانات التحويل والأصناف المشمولة</h3>
-            </div>
+          {/* Left Column: Form Setup */}
+          <div className="lg:col-span-2 space-y-6">
+            {/* Branch Selection Card */}
+            <div className="bg-white rounded-[24px] p-6 border border-slate-100 shadow-sm space-y-4">
+              <h2 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <Building2 size={18} className="text-emerald-600" />
+                <span>تحديد مسار التحويل</span>
+              </h2>
 
-            {/* Selection row */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-black text-slate-400 mb-2">فرع المصدر (سحب من)</label>
-                <select
-                  value={sourceBranchId}
-                  onChange={(e) => setSourceBranchId(e.target.value)}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-100 text-slate-700 font-black rounded-xl focus:outline-none focus:ring-1 focus:ring-[#1E4D4D] text-sm"
-                >
-                  {branches.map(b => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-black text-slate-400 mb-2">فرع الوجهة (تحويل للوارد)</label>
-                <select
-                  value={targetBranchId}
-                  onChange={(e) => setTargetBranchId(e.target.value)}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-100 text-slate-700 font-black rounded-xl focus:outline-none focus:ring-1 focus:ring-[#1E4D4D] text-sm"
-                >
-                  {branches.map(b => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {/* Selector Item UI */}
-            <div className="bg-slate-50/70 p-5 rounded-[24px] border border-slate-100 space-y-4">
-              <h4 className="text-xs font-black text-slate-500">إضافة بند دواء إلى مستند التحويل:</h4>
-              <div className="flex flex-col sm:flex-row gap-3 items-end">
-                <div className="flex-1">
-                  <label className="block text-[10px] font-black text-slate-400 mb-1.5">اختر الصنف</label>
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-center">
+                <div className="md:col-span-2">
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5">فرع المصدر (من)</label>
                   <select
-                    value={selectedProductId}
-                    onChange={(e) => setSelectedProductId(e.target.value)}
-                    className="w-full px-3 py-3 bg-white border border-slate-100 text-slate-700 font-bold rounded-lg text-xs"
+                    value={sourceBranch}
+                    onChange={(e) => setSourceBranch(e.target.value)}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:border-emerald-600"
                   >
-                    <option value="">-- اختر الدواء المطلوب --</option>
-                    {products.map(p => (
-                      <option key={p.id} value={p.id}>{p.name} - ({p.sku || p.barcode})</option>
+                    {branches.map(b => (
+                      <option key={b.id} value={b.id}>{b.name} ({b.code})</option>
                     ))}
                   </select>
                 </div>
-                <div className="w-full sm:w-32">
-                  <label className="block text-[10px] font-black text-slate-400 mb-1.5">الكمية المطلوبة</label>
+
+                <div className="flex justify-center pt-5">
+                  <button
+                    type="button"
+                    onClick={handleSwapBranches}
+                    title="تبديل اتجاه التحويل"
+                    className="p-3 bg-slate-100 hover:bg-emerald-50 hover:text-emerald-600 text-slate-600 rounded-2xl transition-all cursor-pointer"
+                  >
+                    <ArrowLeftRight size={18} />
+                  </button>
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5">فرع الوجهة (إلى)</label>
+                  <select
+                    value={destinationBranch}
+                    onChange={(e) => setDestinationBranch(e.target.value)}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:border-emerald-600"
+                  >
+                    {branches.map(b => (
+                      <option key={b.id} value={b.id} disabled={b.id === sourceBranch}>
+                        {b.name} ({b.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {sourceBranch === destinationBranch && (
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl flex items-center gap-2">
+                  <AlertTriangle size={16} />
+                  <span>تنبيه: فرع المصدر وفرع الوجهة متطابقان، يرجى اختيار فرعين مختلفين.</span>
+                </div>
+              )}
+            </div>
+
+            {/* Product Addition Section */}
+            <div className="bg-white rounded-[24px] p-6 border border-slate-100 shadow-sm space-y-4">
+              <h2 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <Search size={18} className="text-emerald-600" />
+                <span>إضافة أصناف المناقلة</span>
+              </h2>
+
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+                <div className="md:col-span-6">
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5">اختيار المستحضر الدوائي</label>
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      placeholder="بحث بالاسم أو الباركود..."
+                      value={productSearch}
+                      onChange={(e) => setProductSearch(e.target.value)}
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl text-slate-800 focus:outline-none focus:border-emerald-600"
+                    />
+                    <select
+                      value={selectedProductId}
+                      onChange={(e) => setSelectedProductId(e.target.value)}
+                      className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:border-emerald-600"
+                    >
+                      <option value="">-- اختر الدواء المطلوب تحويله --</option>
+                      {filteredProducts.map(prod => (
+                        <option key={prod.productId} value={prod.productId}>
+                          {prod.productName} (الرصيد: {prod.stockQuantity})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="md:col-span-3">
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5">الكمية المحولة</label>
                   <input
                     type="number"
                     min={1}
-                    value={selectedProductQty}
-                    onChange={(e) => setSelectedProductQty(Math.max(1, parseInt(e.target.value, 10)))}
-                    className="w-full px-3 py-2.5 bg-white border border-slate-100 text-black text-xs rounded-lg"
+                    max={currentProduct ? currentProduct.stockQuantity : 9999}
+                    value={quantity}
+                    onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:border-emerald-600"
                   />
+                  {currentProduct && (
+                    <span className="text-[11px] text-slate-400 mt-1 block">
+                      المتوفر: {currentProduct.stockQuantity} عبوة
+                    </span>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  onClick={handleAddProductToTransfer}
-                  className="w-full sm:w-auto px-6 py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-black text-xs rounded-lg transition-all"
-                >
-                  إضافة بند
-                </button>
+
+                <div className="md:col-span-3 flex items-end">
+                  <button
+                    type="button"
+                    onClick={handleAddItem}
+                    disabled={!selectedProductId || sourceBranch === destinationBranch}
+                    className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs py-3 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
+                  >
+                    <Plus size={16} />
+                    <span>إدراج بالمناقلة</span>
+                  </button>
+                </div>
               </div>
             </div>
 
-            {/* Added details table list */}
-            <div className="space-y-3">
-              <h4 className="text-xs font-black text-[#1E4D4D]">قائمة الأصناف المراد مناقلتها:</h4>
-              {transferItems.length === 0 ? (
-                <p className="text-xs text-slate-400 font-bold py-6 text-center">لا توجد بنود للتصدير بعد. استخدم الأداة بالأعلى.</p>
+            {/* Selected Items Table */}
+            <div className="bg-white rounded-[24px] p-6 border border-slate-100 shadow-sm space-y-4">
+              <h2 className="text-sm font-bold text-slate-800 flex items-center justify-between">
+                <span>الأصناف المدرجة في مسودة التحويل ({items.length})</span>
+                <span className="text-xs text-slate-400 font-medium">
+                  إجمالي الوحدات: {items.reduce((s, i) => s + i.quantity, 0)}
+                </span>
+              </h2>
+
+              {items.length === 0 ? (
+                <div className="text-center py-10 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                  <ArrowLeftRight className="mx-auto text-slate-300 mb-2" size={32} />
+                  <p className="text-xs font-bold text-slate-500">لم تتم إضافة أي أصناف إلى المناقلة بعد</p>
+                </div>
               ) : (
-                <div className="border border-slate-50 rounded-2xl overflow-hidden shadow-inner">
+                <div className="overflow-x-auto">
                   <table className="w-full text-right text-xs">
-                    <thead className="bg-[#1E4D4D]/5 text-[#1E4D4D] font-black">
-                      <tr>
-                        <th className="p-3">اسم المستحضر العقاري</th>
-                        <th className="p-3 text-center">الكمية الممنوحة للتحويل</th>
-                        <th className="p-3 text-center">حذف</th>
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-600 font-bold border-b border-slate-100">
+                        <th className="p-3">اسم المستحضر</th>
+                        <th className="p-3 text-center">الرصيد المتاح</th>
+                        <th className="p-3 text-center">الكمية المحولة</th>
+                        <th className="p-3 text-center">رقم التشغيلة</th>
+                        <th className="p-3 text-center">إجراء</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100 font-bold text-slate-600">
-                      {transferItems.map((itm, i) => (
-                        <tr key={itm.productId}>
-                          <td className="p-3 text-slate-800 font-black">{itm.name}</td>
-                          <td className="p-3 text-center">{itm.qty}</td>
+                    <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                      {items.map(item => (
+                        <tr key={item.productId} className="hover:bg-slate-50/50">
+                          <td className="p-3 font-bold text-slate-800">{item.name}</td>
+                          <td className="p-3 text-center">{item.availableStock}</td>
+                          <td className="p-3 text-center font-bold text-emerald-700">{item.quantity}</td>
+                          <td className="p-3 text-center text-slate-500">{item.batchNumber || '-'}</td>
                           <td className="p-3 text-center">
                             <button
                               type="button"
-                              onClick={() => handleRemoveProductFromTransfer(i)}
-                              className="p-1 px-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg transition-colors"
+                              onClick={() => handleRemoveItem(item.productId)}
+                              className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition-all cursor-pointer"
+                              title="حذف الصنف"
                             >
-                              <Trash2 size={12} />
+                              <Trash2 size={15} />
                             </button>
                           </td>
                         </tr>
@@ -456,252 +552,245 @@ export const BranchTransfers: React.FC<BranchTransfersProps> = ({
             </div>
           </div>
 
-          {/* Form Actions Side column */}
-          <div className="bg-gradient-to-b from-[#1E4D4D] to-[#123131] rounded-[32px] p-6 text-white shadow-xl flex flex-col justify-between h-fit space-y-6">
-            <div className="space-y-4">
-              <h3 className="text-sm font-black border-b border-white/10 pb-3">إرسال وتثبيت مستند السحب البيني</h3>
-              
+          {/* Right Column: Summary & Confirmation */}
+          <div className="space-y-6">
+            <div className="bg-white rounded-[24px] p-6 border border-slate-100 shadow-sm space-y-4">
+              <h2 className="text-sm font-bold text-slate-800">بيانات وملاحظات المناقلة</h2>
+
               <div>
-                <label className="block text-[10px] font-black text-slate-300 mb-2">سبب التحويل وملاحظات إضافية</label>
+                <label className="block text-xs font-bold text-slate-600 mb-1.5">سبب / ملاحظات التحويل</label>
                 <textarea
-                  rows={4}
-                  placeholder="مثال: تغطية نقص فوري في صيدلية الشمال لمنتج البنادول..."
+                  rows={3}
                   value={reason}
                   onChange={(e) => setReason(e.target.value)}
-                  className="w-full px-4 py-3 text-xs bg-white/5 border border-white/10 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 rounded-2xl text-white outline-none placeholder:text-white/20"
+                  placeholder="مثال: موازنة مخزون صيدلية الياسمين لتغطية العجز الأسبوعي..."
+                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-none focus:border-emerald-600 resize-none"
                 />
               </div>
 
-              <div className="bg-white/5 p-4 rounded-2xl border border-white/5 text-xs text-slate-300 font-bold space-y-2">
-                <div className="flex justify-between">
-                  <span>إجمالي البنود:</span>
-                  <span className="font-black text-white">{transferItems.length} إصدارات</span>
+              <div className="space-y-2.5 pt-2 border-t border-slate-100 text-xs">
+                <div className="flex justify-between text-slate-500 font-medium">
+                  <span>عدد الأصناف:</span>
+                  <span className="font-bold text-slate-800">{items.length} صنف</span>
                 </div>
-                <div className="flex justify-between">
-                  <span>إجمالي الحبات:</span>
-                  <span className="font-black text-white">{transferItems.reduce((acc, itm) => acc + itm.qty, 0)} عبوة</span>
+                <div className="flex justify-between text-slate-500 font-medium">
+                  <span>إجمالي الكميات:</span>
+                  <span className="font-bold text-emerald-700">{items.reduce((s, i) => s + i.quantity, 0)} عبوة</span>
                 </div>
               </div>
+
+              <button
+                type="button"
+                onClick={handleCreateTransfer}
+                disabled={isSubmitting || items.length === 0 || sourceBranch === destinationBranch}
+                className="w-full bg-[#0c312d] hover:bg-[#07211e] disabled:opacity-50 text-white font-bold text-xs md:text-sm py-4 rounded-2xl transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+              >
+                <Send size={18} />
+                <span>{isSubmitting ? 'جاري معالجة التحويل...' : 'تأكيد وإرسال طلب التحويل'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* 3. Transfers History & Status Management */
+        <div className="space-y-4">
+          {/* Filter Bar */}
+          <div className="bg-white rounded-[24px] p-4 border border-slate-100 shadow-sm flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 overflow-x-auto">
+              {[
+                { id: 'ALL', label: 'الكل' },
+                { id: 'DRAFT', label: 'مسودات' },
+                { id: 'APPROVED', label: 'معتمدة' },
+                { id: 'IN_TRANSIT', label: 'قيد الشحن' },
+                { id: 'RECEIVED', label: 'مستلمة' },
+                { id: 'CANCELLED', label: 'ملغاة' }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setStatusFilter(tab.id)}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    statusFilter === tab.id
+                      ? 'bg-[#0c312d] text-white shadow-sm'
+                      : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
 
-            <button
-              onClick={handleCreateTransferRequest}
-              className="w-full py-4 bg-emerald-500 hover:bg-emerald-600 font-black text-xs text-white rounded-2xl transition-all shadow-lg "
-            >
-              تسجيل مسودة السحب والتحويل
-            </button>
+            <span className="text-xs font-bold text-slate-400">
+              إجمالي النتائج: {filteredTransfers.length}
+            </span>
           </div>
+
+          {/* Transfers Table / Cards */}
+          {filteredTransfers.length === 0 ? (
+            <div className="bg-white rounded-[24px] p-12 text-center border border-slate-100 shadow-sm">
+              <FileText className="mx-auto text-slate-300 mb-3" size={40} />
+              <p className="text-slate-500 font-bold text-sm">لا توجد طلبات تحويل مطابقة للفلتر المحدد</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredTransfers.map(transfer => (
+                <div
+                  key={transfer.id}
+                  className="bg-white rounded-[24px] p-5 border border-slate-100 shadow-sm hover:shadow-md transition-all flex flex-col md:flex-row justify-between items-start md:items-center gap-4"
+                >
+                  <div className="space-y-1.5 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-sm text-slate-800">طلب #{transfer.id}</span>
+                      {getStatusBadge(transfer.status)}
+                      <span className="text-[11px] text-slate-400">
+                        {new Date(transfer.createdAt).toLocaleDateString('ar-SA')}
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 text-xs font-bold text-slate-600">
+                      <span className="text-slate-500">من:</span>
+                      <span className="text-slate-800">{transfer.sourceName}</span>
+                      <ArrowLeftRight size={14} className="text-slate-400" />
+                      <span className="text-slate-500">إلى:</span>
+                      <span className="text-slate-800">{transfer.targetName}</span>
+                    </div>
+
+                    {transfer.notes && (
+                      <p className="text-[11px] text-slate-400 font-medium">{transfer.notes}</p>
+                    )}
+                  </div>
+
+                  {/* Actions based on status */}
+                  <div className="flex flex-wrap items-center gap-2 w-full md:w-auto pt-2 md:pt-0 border-t md:border-t-0 border-slate-100">
+                    <button
+                      onClick={() => handleViewDetails(transfer.id)}
+                      className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
+                    >
+                      <Eye size={14} />
+                      <span>التفاصيل</span>
+                    </button>
+
+                    {transfer.status === 'DRAFT' && (
+                      <>
+                        <button
+                          onClick={() => handleUpdateStatus(transfer.id, 'APPROVED')}
+                          className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
+                        >
+                          <CheckCircle2 size={14} />
+                          <span>اعتماد</span>
+                        </button>
+                        <button
+                          onClick={() => handleUpdateStatus(transfer.id, 'CANCELLED')}
+                          className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold text-xs rounded-xl transition-all cursor-pointer"
+                        >
+                          إلغاء
+                        </button>
+                      </>
+                    )}
+
+                    {transfer.status === 'APPROVED' && (
+                      <>
+                        <button
+                          onClick={() => handleUpdateStatus(transfer.id, 'IN_TRANSIT')}
+                          className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
+                        >
+                          <Truck size={14} />
+                          <span>شحن الأصناف</span>
+                        </button>
+                        <button
+                          onClick={() => handleUpdateStatus(transfer.id, 'CANCELLED')}
+                          className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold text-xs rounded-xl transition-all cursor-pointer"
+                        >
+                          إلغاء
+                        </button>
+                      </>
+                    )}
+
+                    {transfer.status === 'IN_TRANSIT' && (
+                      <>
+                        <button
+                          onClick={() => handleUpdateStatus(transfer.id, 'RECEIVED')}
+                          className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
+                        >
+                          <CheckCircle2 size={14} />
+                          <span>استلام وتسوية</span>
+                        </button>
+                        <button
+                          onClick={() => handleUpdateStatus(transfer.id, 'CANCELLED')}
+                          className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold text-xs rounded-xl transition-all cursor-pointer"
+                        >
+                          إلغاء وإرجاع
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Details & Status Actions Modal */}
+      {/* Details Modal */}
       <AnimatePresence>
-        {activeDetailsId && details && (
+        {selectedTransferDetails && (
           <div className="fixed inset-0 z-[600] flex items-center justify-center p-4">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm"
-              onClick={() => {
-                setActiveDetailsId(null);
-                setDetails(null);
-              }}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+              onClick={() => setSelectedTransferDetails(null)}
             />
             <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-[32px] p-8 max-w-2xl w-full relative z-10 shadow-2xl border border-slate-100 max-h-[90vh] overflow-y-auto"
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="bg-white rounded-[28px] p-6 max-w-lg w-full relative z-10 shadow-2xl border border-slate-50 space-y-4"
             >
-              <div className="flex justify-between items-start mb-6">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-lg font-black text-[#1E4D4D]">تفاصيل طلب المناقلة {details.transfer.transferNumber}</h2>
-                    {getStatusBadge(details.transfer.status)}
-                  </div>
-                  <p className="text-xs text-slate-400 font-black mt-1">
-                    {details.transfer.sourceName} ───← {details.transfer.targetName}
-                  </p>
-                </div>
-                <button
-                  onClick={() => {
-                    setActiveDetailsId(null);
-                    setDetails(null);
-                  }}
-                  className="p-2 hover:bg-slate-50 text-slate-400 hover:text-slate-600 rounded-full transition-colors"
-                >
-                  <X size={18} />
-                </button>
+              <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                <h2 className="text-base font-bold text-slate-800">
+                  تفاصيل المناقلة #{selectedTransferDetails.transfer.id}
+                </h2>
+                {getStatusBadge(selectedTransferDetails.transfer.status)}
               </div>
 
-              {/* Status Action Buttons Section */}
-              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 mb-6 font-bold space-y-3">
-                <p className="text-[10px] text-slate-400 font-black uppercase tracking-wider">الإجراءات المتاحة للحركة والاعتمادات السيادية:</p>
-                
-                <div className="flex flex-wrap gap-2">
-                  {details.transfer.status === "DRAFT" && (
-                    <>
-                      <button
-                        onClick={() => handleTransitionStatus(details.transfer.id, "APPROVED")}
-                        className="px-4 py-2 bg-[#1E4D4D] hover:bg-[#153a3a] text-white font-black text-xs rounded-lg transition-all"
-                      >
-                        اعتماد طلب المناقلة البينية
-                      </button>
-                      <button
-                        onClick={() => handleTransitionStatus(details.transfer.id, "CANCELLED")}
-                        className="px-4 py-2 bg-rose-500 hover:bg-rose-600 text-white font-black text-xs rounded-lg transition-all"
-                      >
-                        إلغاء الطلب
-                      </button>
-                    </>
-                  )}
-
-                  {details.transfer.status === "APPROVED" && (
-                    <>
-                      <button
-                        onClick={() => handleTransitionStatus(details.transfer.id, "IN_TRANSIT")}
-                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs rounded-lg transition-all flex items-center gap-1.5"
-                      >
-                        <Truck size={14} />
-                        <span>تأكيد الشحن والبدء بالنقل</span>
-                      </button>
-                      <button
-                        onClick={() => handleTransitionStatus(details.transfer.id, "CANCELLED")}
-                        className="px-4 py-2 bg-rose-100 hover:bg-rose-200 text-rose-700 font-black text-xs rounded-lg transition-all"
-                      >
-                        إلغاء واعتماد الرفض
-                      </button>
-                    </>
-                  )}
-
-                  {details.transfer.status === "IN_TRANSIT" && (
-                    <button
-                      onClick={() => handleTransitionStatus(details.transfer.id, "RECEIVED")}
-                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-lg transition-all"
-                    >
-                      تسجيل استلام الشحنة وتثبيتها في المخزون
-                    </button>
-                  )}
-
-                  {details.transfer.status === "RECEIVED" && (
-                    <div className="text-xs text-emerald-700 font-black flex items-center gap-1.5">
-                      <CheckCircle2 size={16} />
-                      <span>تم استلام هذه الشحنة وإدخال مخازن الفرع المستهدف في: {new Date(details.transfer.receivedAt).toLocaleString("ar-SA")}</span>
-                    </div>
-                  )}
-
-                  {details.transfer.status === "CANCELLED" && (
-                    <div className="text-xs text-rose-600 font-black flex items-center gap-1.5">
-                      <Ban size={16} />
-                      <span>تم إلغاء عملية المناقلة البينية هذه ولا يمكن معالجتها ثانية.</span>
-                    </div>
-                  )}
+              <div className="space-y-2 text-xs text-slate-600 font-medium bg-slate-50 p-4 rounded-2xl">
+                <div className="flex justify-between">
+                  <span>من:</span>
+                  <span className="font-bold text-slate-800">{selectedTransferDetails.transfer.sourceName}</span>
                 </div>
-              </div>
-
-              {/* Items List inside transfer details */}
-              <div className="space-y-4 font-bold">
-                <h3 className="text-xs font-black text-[#1E4D4D] border-b border-slate-50 pb-2">البنود الصيدلانية المشحونة:</h3>
-                
-                <div className="border border-slate-100 rounded-2xl overflow-hidden bg-slate-50/50">
-                  <table className="w-full text-right text-xs">
-                    <thead>
-                      <tr className="bg-slate-100/75 text-slate-500 font-black">
-                        <th className="p-3">الدواء</th>
-                        <th className="p-3 text-center">الكمية الصادرة</th>
-                        <th className="p-3 text-center">المستلمة فعلياً</th>
-                        <th className="p-3">رقم التشغيلة</th>
-                        <th className="p-3">تاريخ انتهاء الصلاحية</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 font-semibold text-slate-700">
-                      {details.items.map(itm => (
-                        <tr key={itm.id}>
-                          <td className="p-3 font-black text-slate-800">{itm.productName}</td>
-                          <td className="p-3 text-center text-slate-500 font-semibold">{itm.qty}</td>
-                          <td className="p-3 text-center text-emerald-700 font-black">
-                            {details.transfer.status === 'RECEIVED' ? itm.receivedQty : 'بانتظار الاستلام'}
-                          </td>
-                          <td className="p-3 text-xs text-slate-400">{itm.batchNumber || "-"}</td>
-                          <td className="p-3 text-xs text-slate-400">{new Date(itm.expiryDate).toLocaleDateString("ar-SA")}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="flex justify-between">
+                  <span>إلى:</span>
+                  <span className="font-bold text-slate-800">{selectedTransferDetails.transfer.targetName}</span>
                 </div>
-
-                {details.transfer.reason && (
-                  <div className="bg-slate-50 p-4 rounded-xl text-xs border border-slate-100 mt-4 leading-relaxed">
-                    <span className="font-black text-slate-500 block mb-1">سبب الاستدعاء المخزني والمناقلة البينية:</span>
-                    <p className="text-slate-700">{details.transfer.reason}</p>
+                {selectedTransferDetails.transfer.notes && (
+                  <div className="flex justify-between pt-1 border-t border-slate-200">
+                    <span>ملاحظات:</span>
+                    <span className="font-bold text-slate-800">{selectedTransferDetails.transfer.notes}</span>
                   </div>
                 )}
               </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
 
-      {/* Actual Confirm Receipt Modal (Enter Quantities) */}
-      <AnimatePresence>
-        {isReceiving && details && (
-          <div className="fixed inset-0 z-[700] flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
-              onClick={() => setIsReceiving(false)}
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-[32px] p-8 max-w-md w-full relative z-10 shadow-2xl border border-slate-100"
-            >
-              <h2 className="text-base font-black text-[#1E4D4D] mb-4">تسجيل الكميات المستلمة فعلياً</h2>
-              <p className="text-slate-400 text-xs font-bold mb-6">يرجى فحص المستحضرات والتثبت من الكميات الدوائية السليمة التي تم تفريغها بالفرع:</p>
-
-              <div className="space-y-4 max-h-[40vh] overflow-y-auto pr-1">
-                {details.items.map(itm => (
-                  <div key={itm.id} className="flex justify-between items-center gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100">
-                    <div className="flex-1">
-                      <span className="font-black text-slate-700 text-xs block truncate">{itm.productName}</span>
-                      <span className="text-[10px] text-slate-400 block font-bold mt-0.5">الكمية الصادرة: {itm.qty}</span>
+              <h3 className="text-xs font-bold text-slate-700">الأصناف المشمولة:</h3>
+              <div className="max-h-48 overflow-y-auto space-y-2">
+                {selectedTransferDetails.items.map((item, idx) => (
+                  <div key={idx} className="p-3 bg-slate-50 rounded-xl flex justify-between items-center text-xs">
+                    <div>
+                      <span className="font-bold text-slate-800 block">{item.productName}</span>
+                      <span className="text-[10px] text-slate-400">تشغيلة: {item.batchNumber || '-'}</span>
                     </div>
-                    <div className="w-24">
-                      <input
-                        type="number"
-                        min={0}
-                        max={itm.qty}
-                        required
-                        value={receivedQtys[itm.id] ?? itm.qty}
-                        onChange={(e) => {
-                          const val = Math.min(itm.qty, Math.max(0, parseInt(e.target.value, 10) || 0));
-                          setReceivedQtys({ ...receivedQtys, [itm.id]: val });
-                        }}
-                        className="w-full px-2 py-2 text-center text-xs font-black bg-white border border-slate-200 rounded-lg text-black"
-                      />
-                    </div>
+                    <span className="font-bold text-emerald-700">{item.qty} عبوة</span>
                   </div>
                 ))}
               </div>
 
-              <div className="flex gap-2 pt-6">
+              <div className="pt-3 border-t border-slate-100 flex justify-end">
                 <button
                   type="button"
-                  onClick={handleConfirmReceipt}
-                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs py-4 rounded-2xl transition-all shadow-lg"
+                  onClick={() => setSelectedTransferDetails(null)}
+                  className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-all cursor-pointer"
                 >
-                  تأكيد وإدخال المخزن
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsReceiving(false)}
-                  className="px-6 py-4 bg-slate-50 hover:bg-slate-100 text-slate-500 font-bold text-xs rounded-2xl transition-all"
-                >
-                  تراجع
+                  إغلاق
                 </button>
               </div>
             </motion.div>

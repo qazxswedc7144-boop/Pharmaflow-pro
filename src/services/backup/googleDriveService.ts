@@ -1,5 +1,7 @@
 import { signInWithPopup, GoogleAuthProvider, signOut, User } from 'firebase/auth';
 import { auth } from '@/services/firebase';
+import { unifiedTransport } from '@/shared/network/transport/unifiedTransport';
+import { configurationService } from '@/services/config/configurationService';
 
 export { auth };
 
@@ -17,8 +19,8 @@ export const GoogleDriveService = {
         throw new Error('Failed to retrieve access token from Google sign-in.');
       }
       cachedAccessToken = credential.accessToken;
-      localStorage.setItem('gdrive_access_token', cachedAccessToken);
-      localStorage.setItem('gdrive_user_email', result.user.email || '');
+      configurationService.set('gdrive.access_token', cachedAccessToken).catch(() => {});
+      configurationService.set('gdrive.user_email', result.user.email || '').catch(() => {});
       return { user: result.user, accessToken: cachedAccessToken };
     } catch (e) {
       console.error('Sign-in failed:', e);
@@ -28,36 +30,30 @@ export const GoogleDriveService = {
 
   getAccessToken(): string | null {
     if (!cachedAccessToken) {
-      cachedAccessToken = localStorage.getItem('gdrive_access_token');
+      cachedAccessToken = configurationService.getSync<string>('gdrive.access_token') || null;
     }
     return cachedAccessToken;
   },
 
   getUserEmail(): string | null {
-    return localStorage.getItem('gdrive_user_email');
+    return configurationService.getSync<string>('gdrive.user_email') || null;
   },
 
   async signOut(): Promise<void> {
     await signOut(auth);
     cachedAccessToken = null;
-    localStorage.removeItem('gdrive_access_token');
-    localStorage.removeItem('gdrive_user_email');
+    configurationService.set('gdrive.access_token', '').catch(() => {});
+    configurationService.set('gdrive.user_email', '').catch(() => {});
   },
 
   async listBackups(token: string): Promise<any[]> {
     const url = 'https://www.googleapis.com/drive/v3/files?q=name contains "PharmaFlow_" and trashed = false&fields=files(id, name, mimeType, size, createdTime)&orderBy=createdTime desc';
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${token}`
-      }
+    const data = await unifiedTransport.get<any>(url, {
+      profile: 'UPLOAD',
+      headers: { Authorization: `Bearer ${token}` }
     });
 
-    if (!response.ok) {
-      throw new Error(`Failed to list backups from Google Drive: ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    return data.files || [];
+    return data?.files || [];
   },
 
   async uploadBackup(name: string, contentBlob: Blob, token: string): Promise<any> {
@@ -87,49 +83,31 @@ export const GoogleDriveService = {
     body.set(footer, header.length + blobView.length);
 
     const uploadUrl = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
-    const response = await fetch(uploadUrl, {
-      method: 'POST',
+    return await unifiedTransport.post<any>(uploadUrl, body, {
+      profile: 'UPLOAD',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': `multipart/related; boundary=${boundary}`,
         'Content-Length': body.length.toString()
-      },
-      body: body
+      }
     });
-
-    if (!response.ok) {
-      throw new Error(`Failed to upload to Google Drive: ${response.statusText}`);
-    }
-
-    return await response.json();
   },
 
   async downloadBackup(fileId: string, token: string): Promise<Blob> {
     const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${token}`
-      }
+    const data = await unifiedTransport.get<any>(url, {
+      profile: 'UPLOAD',
+      headers: { Authorization: `Bearer ${token}` }
     });
-
-    if (!response.ok) {
-      throw new Error(`Failed to download backup file: ${response.statusText}`);
-    }
-
-    return await response.blob();
+    if (data instanceof Blob) return data;
+    return new Blob([typeof data === 'string' ? data : JSON.stringify(data)], { type: 'application/octet-stream' });
   },
 
   async deleteBackup(fileId: string, token: string): Promise<void> {
     const url = `https://www.googleapis.com/drive/v3/files/${fileId}`;
-    const response = await fetch(url, {
-      method: 'DELETE',
-      headers: {
-        Authorization: `Bearer ${token}`
-      }
+    await unifiedTransport.delete<void>(url, {
+      profile: 'UPLOAD',
+      headers: { Authorization: `Bearer ${token}` }
     });
-
-    if (!response.ok) {
-      throw new Error(`Failed to delete Google Drive backup: ${response.statusText}`);
-    }
   }
 };

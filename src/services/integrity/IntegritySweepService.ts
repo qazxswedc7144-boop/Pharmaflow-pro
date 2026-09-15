@@ -2,6 +2,7 @@
 import { db } from '@/core/db';
 import { SystemAlert } from '@/types';
 import { LoadTestService } from '@/services/system/LoadTestService';
+import { unifiedInventoryMutationEngine } from '@features/inventory/services/UnifiedInventoryMutationEngine';
 
 import { IS_PREVIEW } from '@/constants';
 import { AnomalyScoringEngine } from '@/services/audit/AnomalyScoringEngine';
@@ -116,10 +117,21 @@ export class IntegritySweepService {
       
       if (Math.abs(calculatedStock - currentStock) > 0.01) {
         if (autoFix && p.id) {
-          console.warn(`AUTO_FIX: Correcting stock for [${p.name || p.Name}] from ${currentStock} to ${calculatedStock}`);
-          await db.db.products.update(p.id, { 
-            stock: calculatedStock,
-            updated_at: new Date().toISOString()
+          console.warn(`AUTO_FIX: Correcting stock for [${p.name || p.Name}] from ${currentStock} to ${calculatedStock} via canonical adjustment.`);
+          // 🛡️ REPAIR: Use canonical adjustment instead of direct stock overwrite
+          await unifiedInventoryMutationEngine.executeAdjustment({
+            adjustmentId: `FIX-${Date.now()}`,
+            productId: p.id,
+            warehouseId: 'WH-MAIN', // Default fix warehouse
+            actualQuantity: calculatedStock,
+            reason: `تصحيح آلي لنزاهة البيانات - الفرق: ${calculatedStock - currentStock}`,
+            userId: 'system-repair',
+            tenantId: 'TEN-DEV-001',
+            branchId: 'BR-MAIN',
+            transactionUuid: `REPAIR-${p.id}-${Date.now()}`
+          }).catch(err => {
+            console.error(`FAILED AUTO_FIX for ${p.id}:`, err);
+            healthy = false;
           });
         } else if (!autoFix) {
           healthy = false;
@@ -172,8 +184,8 @@ export class IntegritySweepService {
         const sale = await db.db.sales.get(t.SourceDocumentID);
         if (!sale) {
           if (autoFix) {
-            console.warn(`AUTO_FIX: Deleting orphan inventory transaction [${t.TransactionID}]`);
-            await db.db.inventoryTransactions.delete(t.TransactionID);
+            console.error(`AUTO_FIX BLOCKED: Physical deletion of orphan inventory transaction [${t.TransactionID}] is forbidden by architecture.`);
+            healthy = false;
           } else {
             healthy = false;
           }
@@ -182,8 +194,8 @@ export class IntegritySweepService {
         const purchase = await db.db.purchases.get(t.SourceDocumentID);
         if (!purchase) {
           if (autoFix) {
-            console.warn(`AUTO_FIX: Deleting orphan inventory transaction [${t.TransactionID}]`);
-            await db.db.inventoryTransactions.delete(t.TransactionID);
+            console.error(`AUTO_FIX BLOCKED: Physical deletion of orphan inventory transaction [${t.TransactionID}] is forbidden by architecture.`);
+            healthy = false;
           } else {
             healthy = false;
           }
@@ -227,7 +239,9 @@ export class IntegritySweepService {
     ] as const;
     let healthy = true;
 
-    const actualTableNames = typeof db.getExistingTableNames === 'function' ? db.getExistingTableNames() : db.tables.map((t: any) => t.name);
+    const actualTableNames = typeof db.getExistingTableNames === 'function' 
+      ? db.getExistingTableNames() 
+      : (Array.isArray(db.tables) ? db.tables.map((t: any) => t.name) : []);
 
     for (const tableName of tables) {
       if (!actualTableNames.includes(tableName)) {

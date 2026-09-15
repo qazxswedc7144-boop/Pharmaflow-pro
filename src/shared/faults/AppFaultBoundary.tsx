@@ -1,6 +1,8 @@
 import { Component, ErrorInfo, ReactNode } from 'react';
 import { useAuthStore } from '../../store/authStore';
 import { db } from '../../core/db';
+import { configurationService } from '../../services/config/configurationService';
+import { unifiedTransport } from '../network/transport/unifiedTransport';
 
 interface Props {
   children: ReactNode;
@@ -32,13 +34,13 @@ export class AppFaultBoundary extends Component<Props, State> {
     console.warn("💥 [CRITICAL RENDER EXCEPTION]:", error);
     console.warn("📍 Stack trace location:", errorInfo.componentStack);
     
-    // Attempt local storage log for subsequent diagnosis calls
+    // Attempt configuration log for subsequent diagnosis calls
     try {
-      localStorage.setItem('pf_last_render_crash', JSON.stringify({
+      configurationService.set('pf_last_render_crash', {
         message: error.message,
         stack: errorInfo.componentStack,
         timestamp: new Date().toISOString()
-      }));
+      }).catch(() => {});
     } catch (e) {}
 
     const userState = useAuthStore.getState();
@@ -103,24 +105,13 @@ export class AppFaultBoundary extends Component<Props, State> {
         console.warn("[CAPACITOR] Crashlytics call error:", capErr);
       }
 
-      // Live fetch post to API routes
-      fetch('/api/security/crash', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      }).then(response => {
-        if (!response.ok) {
-          console.warn("[CRASH_LOGGER] Failed to dispatch remote crash log:", response.statusText);
-          this.setState({ syncStatus: 'failed' });
-        } else {
-          console.log("🚀 [CRASH_LOGGER] Remote crash trace successfully reported to secure server log.");
-          this.setState({ syncStatus: 'success' });
-        }
+      // Live unifiedTransport post to API routes
+      unifiedTransport.post('/api/security/crash', payload).then(() => {
+        console.log("🚀 [CRASH_LOGGER] Remote crash trace successfully reported to secure server log.");
+        this.setState({ syncStatus: 'success' });
       }).catch(err => {
         console.warn("[CRASH_LOGGER] Network connection failure to crash logging api:", err.message);
-        // Fallback to local Dexie on fetch network failure
+        // Fallback to local Dexie on network failure
         try {
           db.System_Error_Log.add({
             id: `CRASH-${Date.now()}`,
@@ -144,17 +135,6 @@ export class AppFaultBoundary extends Component<Props, State> {
   }
 
   private handleFullReset = () => {
-    try {
-      // Clear storage elements and force a hard refresh
-      const isDev = window.location.hostname === 'localhost' || 
-                    window.location.hostname.includes('127.0.0.1') || 
-                    window.location.hostname.includes('ais-dev');
-      
-      if (isDev) {
-        sessionStorage.clear();
-        console.log('[RECOVERY] Session storage cleared.');
-      }
-    } catch (e) {}
     window.location.hash = '#/dashboard';
     window.location.reload();
   };

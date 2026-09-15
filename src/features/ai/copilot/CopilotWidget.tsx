@@ -3,16 +3,25 @@
  * Non-intrusive floating trigger button providing access to the Smart Pharmacy Copilot drawer.
  */
 
-import React, { useState, useCallback, memo } from 'react';
+import React, { useState, useCallback, memo, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Bot, Sparkles } from 'lucide-react';
 import { useAuthStore } from '@/store/authStore';
+import { useUIStore } from '@/store/useUIStore';
 import { AIUserContext } from '@/services/ai/types';
 import { CopilotDrawer } from './CopilotDrawer';
 
 export const CopilotWidget: React.FC = memo(() => {
   const [isOpen, setIsOpen] = useState(false);
   const { user } = useAuthStore();
+  const isSubscriptionOnboardingOpen = useUIStore((state) => state.isSubscriptionOnboardingOpen);
+
+  // Close drawer immediately if welcome onboarding modal is triggered
+  useEffect(() => {
+    if (isSubscriptionOnboardingOpen && isOpen) {
+      setIsOpen(false);
+    }
+  }, [isSubscriptionOnboardingOpen, isOpen]);
 
   const handleToggle = useCallback(() => {
     setIsOpen((prev) => !prev);
@@ -21,6 +30,11 @@ export const CopilotWidget: React.FC = memo(() => {
   const handleClose = useCallback(() => {
     setIsOpen(false);
   }, []);
+
+  // Strict architectural isolation: Do not render or allow any interaction while Onboarding Modal is active
+  if (isSubscriptionOnboardingOpen) {
+    return null;
+  }
 
   // Derive standardized AIUserContext from active session
   const rawRole = (user?.role || 'staff').toLowerCase();

@@ -79,7 +79,7 @@ export class LockRepository {
         idempotencyKey
       });
 
-      if (response.status === 200 && response.data.acquired) {
+      if (response && response.data && response.data.acquired) {
         const lock = response.data.lock as DistributedLock;
         return lock;
       }

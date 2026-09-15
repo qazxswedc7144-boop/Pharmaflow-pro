@@ -1,22 +1,28 @@
 // src/features/purchases/services/smartImport/sourceDetector.ts
+/**
+ * PharmaFlow PRO ERP — Sovereign Enterprise Edition
+ * Phase 2.6: Enterprise Source Detection & File Security Gatekeeper
+ */
+
 import { ImportSourceType } from './types';
+import { ENTERPRISE_IMPORT_LIMITS, ImportLimitEnforcer, LimitEnforcementResult } from './performance/importLimits';
 
 export const IMPORT_LIMITS = {
-  MAX_EXCEL_FILE_SIZE: 20 * 1024 * 1024, // 20 MB
-  MAX_CSV_FILE_SIZE: 20 * 1024 * 1024,   // 20 MB
-  MAX_DOCX_FILE_SIZE: 15 * 1024 * 1024,  // 15 MB
-  MAX_PDF_FILE_SIZE: 25 * 1024 * 1024,   // 25 MB
-  MAX_IMAGE_FILE_SIZE: 15 * 1024 * 1024, // 15 MB
-  MAX_TOTAL_ROWS: 5000,
-  MAX_DOCX_TABLES: 100,
-  MAX_PDF_PAGES: 100,
+  MAX_EXCEL_FILE_SIZE: ENTERPRISE_IMPORT_LIMITS.EXCEL.maxFileSize,
+  MAX_CSV_FILE_SIZE: ENTERPRISE_IMPORT_LIMITS.CSV.maxFileSize,
+  MAX_DOCX_FILE_SIZE: ENTERPRISE_IMPORT_LIMITS.DOCX.maxFileSize,
+  MAX_PDF_FILE_SIZE: ENTERPRISE_IMPORT_LIMITS.PDF.maxFileSize,
+  MAX_IMAGE_FILE_SIZE: ENTERPRISE_IMPORT_LIMITS.IMAGE.maxFileSize,
+  MAX_TOTAL_ROWS: ENTERPRISE_IMPORT_LIMITS.CSV.maxRows || 5000,
+  MAX_DOCX_TABLES: ENTERPRISE_IMPORT_LIMITS.DOCX.maxTables || 50,
+  MAX_PDF_PAGES: ENTERPRISE_IMPORT_LIMITS.PDF.maxPages || 50,
   MAX_PROCESSING_TIMEOUT_MS: 30000,
   SUPPORTED_IMAGE_EXTENSIONS: ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.jfif'],
   SUPPORTED_EXCEL_EXTENSIONS: ['.xlsx', '.xls', '.xlsm', '.xlsb'],
   SUPPORTED_CSV_EXTENSIONS: ['.csv', '.tsv', '.txt'],
   SUPPORTED_DOCX_EXTENSIONS: ['.docx', '.doc'],
   SUPPORTED_PDF_EXTENSIONS: ['.pdf'],
-  DANGEROUS_EXTENSIONS: ['.exe', '.bat', '.cmd', '.sh', '.vbs', '.js', '.msi', '.jar', '.scr', '.ps1', '.dll', '.com']
+  DANGEROUS_EXTENSIONS: ENTERPRISE_IMPORT_LIMITS.DANGEROUS_EXTENSIONS
 };
 
 export interface FileValidationResult {
@@ -28,9 +34,6 @@ export interface FileValidationResult {
   errorCode?: string;
 }
 
-/**
- * Enterprise Source Detection & File Security Gatekeeper
- */
 export class SourceDetector {
   /**
    * Sniffs and detects the file source type based on extension, MIME type, or data URI
@@ -50,6 +53,8 @@ export class SourceDetector {
       if (lower.endsWith('.csv') || lower.endsWith('.tsv') || lower.endsWith('.txt')) return 'CSV';
       if (lower.endsWith('.pdf')) return 'PDF';
       if (IMPORT_LIMITS.SUPPORTED_IMAGE_EXTENSIONS.some(ext => lower.endsWith(ext))) return 'IMAGE';
+      // Raw string content check (CSV / Tabular / Text)
+      if (file.includes('\n') || file.includes(',') || file.includes('\t')) return 'CSV';
       return 'UNKNOWN';
     }
 
@@ -141,7 +146,7 @@ export class SourceDetector {
       };
     }
 
-    // Security check: Check for double dangerous extensions (e.g. invoice.xlsx.exe)
+    // Security check: Check for dangerous extensions (e.g. invoice.xlsx.exe)
     if (IMPORT_LIMITS.DANGEROUS_EXTENSIONS.some(ext => lowerName.endsWith(ext))) {
       return {
         isValid: false,
@@ -166,33 +171,16 @@ export class SourceDetector {
       };
     }
 
-    // Size limit enforcement per type
-    let maxSize = IMPORT_LIMITS.MAX_EXCEL_FILE_SIZE;
-    if (sourceType === 'CSV') maxSize = IMPORT_LIMITS.MAX_CSV_FILE_SIZE;
-    if (sourceType === 'DOCX') maxSize = IMPORT_LIMITS.MAX_DOCX_FILE_SIZE;
-    if (sourceType === 'PDF') maxSize = IMPORT_LIMITS.MAX_PDF_FILE_SIZE;
-    if (sourceType === 'IMAGE' || sourceType === 'CAMERA') maxSize = IMPORT_LIMITS.MAX_IMAGE_FILE_SIZE;
-
-    if (fileSize > maxSize) {
-      const mb = Math.round(maxSize / (1024 * 1024));
+    // Enterprise Size Limit Enforcement
+    const sizeCheck = ImportLimitEnforcer.validateFileSize(sourceType, fileSize, fileName);
+    if (!sizeCheck.isAllowed) {
       return {
         isValid: false,
         sourceType,
         fileName,
         fileSize,
-        errorCode: 'FILE_TOO_LARGE',
-        errorMessage: `حجم الملف (${(fileSize / (1024 * 1024)).toFixed(1)} ميجابايت) يتجاوز الحد الأقصى المسموح به (${mb} ميجابايت).`
-      };
-    }
-
-    if (fileSize === 0) {
-      return {
-        isValid: false,
-        sourceType,
-        fileName,
-        fileSize,
-        errorCode: 'EMPTY_FILE',
-        errorMessage: 'الملف فارغ أو لا يحتوي على أي بيانات صالحة للقراءة.'
+        errorCode: sizeCheck.errorCode || 'FILE_TOO_LARGE',
+        errorMessage: sizeCheck.errorMessage || 'حجم الملف يتجاوز الحد المسموح به.'
       };
     }
 
@@ -202,5 +190,19 @@ export class SourceDetector {
       fileName,
       fileSize
     };
+  }
+
+  /**
+   * Helper to validate row limits
+   */
+  static validateRowCount(sourceType: ImportSourceType, rowCount: number): LimitEnforcementResult {
+    return ImportLimitEnforcer.validateRowCount(sourceType, rowCount);
+  }
+
+  /**
+   * Helper to validate page limits
+   */
+  static validatePageCount(sourceType: ImportSourceType, pageCount: number): LimitEnforcementResult {
+    return ImportLimitEnforcer.validatePageCount(sourceType, pageCount);
   }
 }

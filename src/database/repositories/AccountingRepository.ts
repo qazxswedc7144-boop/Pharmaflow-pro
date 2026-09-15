@@ -50,24 +50,36 @@ export const AccountingRepository = {
       await db.journalEntries.add({
         ...entry,
         id: entryId,
-        created_at: new Date().toISOString()
+        createdAt: (entry as any).createdAt || entry.created_at || new Date().toISOString(),
+        created_at: entry.created_at || (entry as any).createdAt || new Date().toISOString(),
+        tenantId: (entry as any).tenantId || 'tenant-default',
+        branchId: (entry as any).branchId || 'main',
+        status: entry.status || 'Posted'
       });
       
       // Update account balances
       for (const line of entry.lines) {
+        const lineAccId = line.accountId || line.account_id || 'ACC-GENERIC';
+        const lineEntryId = line.entryId || line.entry_id || entryId;
         const amount = (line.debit || 0) - (line.credit || 0);
-        const account = await db.accounts.get(line.accountId);
-        if (account) {
-          await db.accounts.update(line.accountId, {
-            balance: (account.balance || 0) + amount,
-            updatedAt: new Date().toISOString()
-          });
+        if (lineAccId) {
+          const account = await db.accounts.get(lineAccId);
+          if (account) {
+            await db.accounts.update(lineAccId, {
+              balance: (account.balance || 0) + amount,
+              updatedAt: new Date().toISOString()
+            });
+          }
         }
 
         // Also save journal lines separately if needed for indexing
         await db.journalLines.add({
           ...line,
-          entryId
+          id: line.id || line.lineId || `JL-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+          entryId: lineEntryId,
+          entry_id: lineEntryId,
+          accountId: lineAccId,
+          account_id: lineAccId
         });
       }
     });

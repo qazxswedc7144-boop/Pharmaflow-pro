@@ -10,6 +10,8 @@ import { DeviceService } from "./device.service";
 import { SyncConflictService } from "./sync-conflict.service";
 import { SyncAuditService } from "./sync-audit.service";
 import { SyncMetricsService } from "./sync-metrics.service";
+import { SyncFinancialIntegrityService } from "./sync-financial-integrity.service";
+import { CompensatingTransactionService } from "./compensating-transaction.service";
 import { SyncEnvelope, SyncPullRequest, SYNC_PROTOCOL_VERSION } from "./sync.types";
 import { prisma } from "../../database/prisma";
 
@@ -476,10 +478,155 @@ syncRouter.get("/audit-logs", async (req: Request, res: Response): Promise<void>
  */
 syncRouter.post("/ack", async (req: Request, res: Response): Promise<void> => {
   try {
-    const { ackId, deviceId } = req.body;
+    const authReq = req as AuthenticatedRequest;
+    const authenticatedTenantId = authReq.user?.tenantId || "default-tenant";
+    const { ackId, deviceId, sequence } = req.body;
+
+    if (deviceId && sequence !== undefined) {
+      DeviceService.updateDeviceSequence(authenticatedTenantId, deviceId, { ackSequence: Number(sequence) });
+    }
+
     res.status(200).json({
       success: true,
       message: `Acknowledge packet ${ackId} registered successfully for device ${deviceId || "unspecified"}`
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /devices
+ * List all registered devices for the authenticated tenant (Multi-Device Fleet)
+ */
+syncRouter.get("/devices", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const authenticatedTenantId = authReq.user?.tenantId || "default-tenant";
+    const devices = DeviceService.getTenantDevices(authenticatedTenantId);
+
+    res.status(200).json({
+      success: true,
+      data: devices
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /device/:deviceId/sequence
+ * Update cursor sequence and version vector for a device
+ */
+syncRouter.post("/device/:deviceId/sequence", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const authenticatedTenantId = authReq.user?.tenantId || "default-tenant";
+    const deviceId = String(req.params.deviceId || "");
+    const { syncedSequence, ackSequence, versionVector } = req.body;
+
+    if (!deviceId) {
+      res.status(400).json({ success: false, error: "deviceId parameter is required" });
+      return;
+    }
+
+    if (syncedSequence !== undefined || ackSequence !== undefined) {
+      DeviceService.updateDeviceSequence(authenticatedTenantId, deviceId, {
+        syncedSequence: syncedSequence !== undefined ? Number(syncedSequence) : undefined,
+        ackSequence: ackSequence !== undefined ? Number(ackSequence) : undefined
+      });
+    }
+
+    if (versionVector && typeof versionVector === "object") {
+      DeviceService.updateVersionVector(authenticatedTenantId, deviceId, versionVector);
+    }
+
+    const updated = await DeviceService.getDevice(authenticatedTenantId, deviceId);
+    res.status(200).json({
+      success: true,
+      data: updated
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /integrity-check
+ * Verifies financial ledger integrity and accounting invariants
+ */
+syncRouter.post("/integrity-check", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const authenticatedTenantId = authReq.user?.tenantId || "default-tenant";
+    const branchId = req.body.branchId || undefined;
+
+    const report = await SyncFinancialIntegrityService.verifyTenantIntegrity(
+      authenticatedTenantId,
+      branchId
+    );
+
+    res.status(200).json({
+      success: true,
+      data: report
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /compensating-transaction
+ * Creates a formal compensating event (Reversing Journal Entry, Credit Note, Inventory Reconciliation)
+ */
+syncRouter.post("/compensating-transaction", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const authenticatedTenantId = authReq.user?.tenantId || "default-tenant";
+    const authenticatedUserId = authReq.user?.userId || "system";
+    const { type, payload } = req.body;
+
+    if (!type || !payload) {
+      res.status(400).json({ success: false, error: "type and payload are required." });
+      return;
+    }
+
+    let result: any = null;
+
+    if (type === "REVERSING_JOURNAL_ENTRY") {
+      result = CompensatingTransactionService.generateReversingJournalEntry({
+        ...payload,
+        tenantId: authenticatedTenantId,
+        actorId: authenticatedUserId
+      });
+    } else if (type === "CREDIT_NOTE") {
+      result = CompensatingTransactionService.generateCreditNote({
+        ...payload,
+        tenantId: authenticatedTenantId,
+        actorId: authenticatedUserId
+      });
+    } else if (type === "INVENTORY_RECONCILIATION") {
+      result = CompensatingTransactionService.generateInventoryReconciliation({
+        ...payload,
+        tenantId: authenticatedTenantId,
+        actorId: authenticatedUserId
+      });
+    } else {
+      res.status(400).json({ success: false, error: `Unsupported compensating transaction type: ${type}` });
+      return;
+    }
+
+    await SyncAuditService.logEvent({
+      tenantId: authenticatedTenantId,
+      userId: authenticatedUserId,
+      operation: "COMPENSATING_TRANSACTION_CREATED",
+      result: "SUCCESS",
+      metadata: { type, id: result.id }
+    });
+
+    res.status(200).json({
+      success: true,
+      data: result
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
