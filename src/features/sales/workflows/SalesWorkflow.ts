@@ -33,9 +33,9 @@ export interface SalesWorkflowResult {
 }
 
 export class SalesWorkflow implements BusinessWorkflow<SalesWorkflowInput, SalesWorkflowResult> {
-  public id = 'sales.invoice.process';
-  public name = 'معالجة فاتورة مبيعات';
-  public operationType = 'SALE';
+  public id = 'SALE';
+  public name = 'ترحيل فاتورة مبيعات (آلي)';
+  public operationType = 'POST';
   public requiredPermissions = ['sales.create', 'sales.edit'];
   public tables = [
     'invoices', 'invoiceItems', 'products', 'inventoryTransactions',

@@ -472,6 +472,7 @@ model AuditLog {
 
 model IdempotencyKey {
   id             String    @id @default(uuid())
+  tenantId       String?
   key            String    @unique
   requestHash    String
   endpoint       String
@@ -510,6 +511,7 @@ model SyncQueue {
 
 model SyncEvent {
   id          String   @id @default(uuid())
+  tenantId    String?
   eventId     String   @unique @default(uuid())
   sequence    BigInt   @unique @default(autoincrement())
   clientTime  DateTime

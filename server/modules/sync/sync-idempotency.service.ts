@@ -2,6 +2,7 @@
 // Logical Idempotency Engine for Phase 8.3 Enterprise Synchronization
 
 import crypto from "crypto";
+import { prisma } from "../../database/prisma";
 import { PerMutationResult } from "./sync.types";
 
 interface StoredIdempotencyRecord {
@@ -44,18 +45,46 @@ export class SyncIdempotencyService {
   /**
    * Checks if a mutation was already processed or is currently in flight.
    */
-  static check(
+  static async check(
     tenantId: string,
     deviceId: string,
     idempotencyKey: string,
     currentPayload: unknown
-  ): {
+  ): Promise<{
     isDuplicate: boolean;
     isPayloadMismatch: boolean;
     previousResult?: PerMutationResult;
-  } {
+  }> {
     const scopedKey = this.getScopedKey(tenantId, deviceId, idempotencyKey);
-    const existing = this.store.get(scopedKey);
+    
+    // 1. Check in-memory first for high-speed local hits
+    let existing = this.store.get(scopedKey);
+
+    // 2. Fallback to Database for cross-instance and durability
+    if (!existing) {
+      try {
+        const dbKey = await prisma.idempotencyKey.findUnique({
+          where: { key: scopedKey }
+        });
+        
+        if (dbKey && dbKey.expiresAt > new Date()) {
+          existing = {
+            scopedKey,
+            tenantId,
+            deviceId,
+            idempotencyKey,
+            payloadHash: dbKey.requestHash,
+            status: dbKey.processing ? "IN_FLIGHT" : "COMPLETED",
+            result: (dbKey.responseBody as any) || { status: "SUCCESS" },
+            createdAt: dbKey.createdAt.getTime(),
+            expiresAt: dbKey.expiresAt.getTime()
+          };
+          this.store.set(scopedKey, existing);
+        }
+      } catch (err) {
+        console.warn("[SyncIdempotency] Database lookup failed:", err);
+      }
+    }
 
     if (!existing) {
       return { isDuplicate: false, isPayloadMismatch: false };
@@ -181,18 +210,20 @@ export class SyncIdempotencyService {
   /**
    * Records a processed mutation result
    */
-  static record(
+  static async record(
     tenantId: string,
     deviceId: string,
     idempotencyKey: string,
     payload: unknown,
-    result: PerMutationResult
-  ): void {
+    result: PerMutationResult,
+    tx?: any
+  ): Promise<void> {
     const scopedKey = this.getScopedKey(tenantId, deviceId, idempotencyKey);
     const now = Date.now();
     const payloadHash = this.computePayloadHash(payload);
+    const expiresAt = now + this.TTL_MS;
 
-    this.store.set(scopedKey, {
+    const record: StoredIdempotencyRecord = {
       scopedKey,
       tenantId,
       deviceId,
@@ -204,8 +235,37 @@ export class SyncIdempotencyService {
         status: "DUPLICATE" // When replayed in future, indicate DUPLICATE status
       },
       createdAt: now,
-      expiresAt: now + this.TTL_MS
-    });
+      expiresAt: expiresAt
+    };
+
+    // 1. Memory update
+    this.store.set(scopedKey, record);
+
+    // 2. Database update
+    const client = tx || prisma;
+    try {
+      await client.idempotencyKey.upsert({
+        where: { key: scopedKey },
+        create: {
+          key: scopedKey,
+          tenantId,
+          requestHash: payloadHash,
+          endpoint: "sync_mutation",
+          requestMethod: "POST",
+          responseBody: record.result as any,
+          responseStatus: 200,
+          processing: false,
+          expiresAt: new Date(expiresAt)
+        },
+        update: {
+          responseBody: record.result as any,
+          processing: false,
+          expiresAt: new Date(expiresAt)
+        }
+      });
+    } catch (err) {
+      console.warn("[SyncIdempotency] Database persistence failed:", err);
+    }
   }
 
   /**

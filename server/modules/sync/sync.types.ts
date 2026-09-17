@@ -118,6 +118,13 @@ export interface SyncEnvelope {
   mutations: SyncMutation[];
 }
 
+export interface SyncEffect {
+  entity: string;
+  entityId: string;
+  operation: "CREATE" | "UPDATE" | "DELETE" | "POST" | "CANCEL" | "ADJUST";
+  payload: Record<string, any>;
+}
+
 export interface PerMutationResult {
   id?: string;
   mutationId: string;
@@ -136,6 +143,7 @@ export interface PerMutationResult {
   message?: string;
   processedAt?: string;
   details?: any;
+  effects?: SyncEffect[];
 }
 
 export interface SyncPushResponse {

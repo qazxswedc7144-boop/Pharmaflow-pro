@@ -51,8 +51,6 @@ export class IdempotencyRepository {
 
   /**
    * Tries to find or create a lock for a given key.
-   * If the key already exists, returns the existing record.
-   * Otherwise, creates a new locked record set to `processing: true`.
    */
   static async acquireLock(
     key: string,
@@ -60,6 +58,7 @@ export class IdempotencyRepository {
     endpoint: string,
     requestMethod: string,
     userId: string | null,
+    tenantId: string | null = null,
     expiresInMs = 24 * 60 * 60 * 1000 // default 24 hours
   ): Promise<{ record: IdempotencyKey; isNew: boolean }> {
     const expiresAt = new Date(Date.now() + expiresInMs);
@@ -78,6 +77,7 @@ export class IdempotencyRepository {
         const created = await tx.idempotencyKey.create({
           data: {
             key,
+            tenantId,
             requestHash,
             endpoint,
             requestMethod,
@@ -103,6 +103,7 @@ export class IdempotencyRepository {
 
         const mockRecord: IdempotencyKey = {
           id: Math.random().toString(36).substring(3, 11),
+          tenantId,
           key,
           requestHash,
           endpoint,
@@ -162,6 +163,7 @@ export class IdempotencyRepository {
         // Fallback create if not there
         const mockRecord: IdempotencyKey = {
           id: Math.random().toString(36).substring(3, 11),
+          tenantId: null,
           key,
           requestHash: "",
           endpoint: "",

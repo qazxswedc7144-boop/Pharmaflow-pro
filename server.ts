@@ -4,32 +4,50 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { exec } from "child_process";
 
-// Enforce strict environment validation immediately upon boot, and set safe defaults if missing
-if (!process.env.ENCRYPTION_KEY) {
-  console.warn("⚠️ Warning: ENCRYPTION_KEY is not defined in the environment. Falling back to a temporary system key to prevent boot failure.");
-  process.env.ENCRYPTION_KEY = 'pharmaflow-fallback-secure-master-key-gcm-sha256-2026';
+const isProduction = process.env.NODE_ENV === "production" || process.cwd().includes("dist") || (typeof __filename !== "undefined" && __filename.includes("dist"));
+
+// Enforce strict environment validation
+if (isProduction) {
+  const missingSecrets: string[] = [];
+  if (!process.env.ENCRYPTION_KEY) missingSecrets.push("ENCRYPTION_KEY");
+  if (!process.env.JWT_SECRET) missingSecrets.push("JWT_SECRET");
+  if (!process.env.JWT_REFRESH_SECRET) missingSecrets.push("JWT_REFRESH_SECRET");
+  
+  if (missingSecrets.length > 0) {
+    console.error(`🚨 FATAL: Missing critical production secrets: [${missingSecrets.join(", ")}]. Application cannot start in production mode.`);
+    process.exit(1);
+  }
+} else {
+  // Safe fallbacks for development/preview environments only
+  if (!process.env.ENCRYPTION_KEY) {
+    console.warn("⚠️ Warning: ENCRYPTION_KEY is missing. Using development fallback.");
+    process.env.ENCRYPTION_KEY = 'pharmaflow-dev-fallback-key-2026';
+  }
+  if (!process.env.JWT_SECRET) {
+    console.warn("⚠️ Warning: JWT_SECRET is missing. Using development fallback.");
+    process.env.JWT_SECRET = 'pharmaflow-dev-jwt-secret';
+  }
+  if (!process.env.JWT_REFRESH_SECRET) {
+    process.env.JWT_REFRESH_SECRET = 'pharmaflow-dev-jwt-refresh';
+  }
 }
 
-if (!process.env.JWT_SECRET) {
-  console.warn("⚠️ Warning: JWT_SECRET is missing from the environment. Falling back to a temporary secret to prevent boot failure.");
-  process.env.JWT_SECRET = 'pharmaflow-local-development-jwt-secure-secret-2026';
-}
-
-if (!process.env.JWT_REFRESH_SECRET) {
-  console.warn("⚠️ Warning: JWT_REFRESH_SECRET is missing from the environment. Falling back to a temporary refresh secret to prevent boot failure.");
-  process.env.JWT_REFRESH_SECRET = 'pharmaflow-local-development-jwt-refresh-secure-secret-2026';
-}
-
-// Global resilience listeners to protect the containerized server process from premature exit under background load or DB hiccups
+// Global resilience listeners
 process.on("unhandledRejection", (reason: any) => {
   const detail = (reason?.message || String(reason || "")).replace(/error/gi, "err_");
-  console.warn("⚠️ Unhandled Promise Rejection captured in process:", detail);
+  console.warn("⚠️ Unhandled Promise Rejection:", detail);
 });
 
 process.on("uncaughtException", (errVal: any) => {
   const detail = (errVal?.message || String(errVal || "")).replace(/error/gi, "err_");
-  console.error("🚨 Uncaught Exception captured in process:", detail, errVal?.stack || "");
+  console.error("🚨 Uncaught Exception:", detail, errVal?.stack || "");
 });
+
+// Force production mode early if running from dist or as cjs
+const isDistFolder = process.cwd().includes("dist") || (typeof __filename !== "undefined" && __filename.includes("dist"));
+if (isDistFolder || (typeof __filename !== "undefined" && __filename.endsWith(".cjs"))) {
+  process.env.NODE_ENV = "production";
+}
 
 let __filenameResolved = process.cwd();
 let __dirnameResolved = process.cwd();
@@ -44,7 +62,7 @@ if (typeof __filename !== "undefined") {
       __dirnameResolved = path.dirname(__filenameResolved);
     }
   } catch {
-    // fallback to process.cwd()
+    // fallback
   }
 }
 
@@ -77,6 +95,7 @@ import organizationRouter from "./server/routes/organization.routes";
 import rbacRouter from "./server/routes/rbac.routes";
 import { reportingRouter } from "./server/routes/reporting.routes";
 import { platformRouter } from "./server/modules/platform/platform.router";
+import { prisma } from "./server/database/prisma";
 
 
 function killStaleProcesses(port: number) {
@@ -98,20 +117,23 @@ async function startServer() {
 
   if (hasDb) {
     setTimeout(() => {
-      console.log("[BOOT] Applying Prisma database migrations asynchronously in background...");
-      exec("npx prisma migrate deploy", { timeout: 15000 }, (migrateErr, stdout) => {
+      console.log("[BOOT] Applying Prisma database migrations asynchronously...");
+      const prismaBinary = path.resolve(process.cwd(), "node_modules", ".bin", "prisma");
+      const migrateCmd = fs.existsSync(prismaBinary) ? `${prismaBinary} migrate deploy` : "npx prisma migrate deploy";
+      
+      exec(migrateCmd, { timeout: 30000 }, (migrateErr, stdout) => {
         if (migrateErr) {
-          console.log("[BOOT] Database migrations info: Cloud SQL / Postgres offline or unreachable. Proceeding with offline fallback engine.");
+          console.warn("[BOOT] Migration notice (Background): Database might be busy or offline. Error:", migrateErr.message);
         } else {
-          if (stdout) console.log("[BOOT] Prisma migrate stdout:", stdout.trim());
-          console.log("[BOOT] Prisma database migrations applied successfully.");
+          if (stdout) console.log("[BOOT] Migration output:", stdout.trim());
+          console.log("[BOOT] Database migrations completed successfully.");
         }
       });
-    }, 100);
+    }, 500);
   }
 
-  const PORT = (process.env.PORT ? parseInt(process.env.PORT, 10) : 3000) || 3000;
-  console.log(`[BOOT] Server configured to listen on PORT: ${PORT} (env.PORT: ${process.env.PORT || 'not set'})`);
+  const PORT = 3000;
+  console.log(`[BOOT] Server configured to listen on PORT: ${PORT}`);
   
   // Clean up any stale processes in development if needed
   if (process.env.NODE_ENV !== "production") {
@@ -122,13 +144,28 @@ async function startServer() {
   console.log("[BOOT] Express initialized.");
   app.set("trust proxy", 1); // Respect reverse proxy headers (e.g., Cloud Run, Nginx router) for rate-limiting
 
-  // Top-level endpoints to support load balancer and ingress orchestrator health and readiness probes (First priority, unthrottled)
-  app.all(["/api/health", "/health", "/healthz", "/ready", "/live", "/_ah/health", "/_ah/start", "/_health", "/ping"], (_req, res) => {
-    res.status(200).json({ 
-      status: "ok", 
-      mode: process.env.NODE_ENV || "development", 
-      db_host: process.env.DATABASE_URL ? "configured" : "fallback",
+  // Health check endpoints with enhanced diagnostic reporting
+  app.all(["/api/health", "/health", "/healthz", "/ready", "/live", "/ping"], async (_req, res) => {
+    const dbStatus = await (async () => {
+      try {
+        if (!process.env.DATABASE_URL) return "MISSING_CONFIG";
+        // Perform a real database query to confirm live connection
+        await prisma.$queryRaw`SELECT 1`;
+        return "CONNECTED";
+      } catch (err: any) {
+        console.warn("[Health] Database query check failed:", err?.message || err);
+        return isProduction ? "DISCONNECTED" : "OFFLINE_FALLBACK";
+      }
+    })();
+
+    const isHealthy = dbStatus === "CONNECTED" || (!isProduction && dbStatus === "OFFLINE_FALLBACK");
+
+    res.status(isHealthy ? 200 : 503).json({ 
+      status: isHealthy ? "ok" : "degraded", 
+      env: process.env.NODE_ENV || "development", 
+      database: dbStatus,
       port: PORT,
+      version: "1.2.0-prod",
       timestamp: new Date().toISOString()
     });
   });
@@ -357,7 +394,7 @@ async function startServer() {
   });
 
   function setupStaticServing(appInstance: express.Express) {
-    console.log("[PRODUCTION] Serving static assets...");
+    console.log("[PRODUCTION] Initializing static asset engine...");
     
     let distPath = path.resolve(process.cwd(), 'dist');
     const possibleDistPaths = [
@@ -370,19 +407,22 @@ async function startServer() {
       '/app/dist',
       '/workspace/dist'
     ];
+
     for (const cand of possibleDistPaths) {
-      if (fs.existsSync(path.resolve(cand, 'index.html'))) {
+      const indexCandidate = path.resolve(cand, 'index.html');
+      if (fs.existsSync(indexCandidate)) {
         distPath = cand;
+        console.log(`[BOOT] Found index.html at: ${indexCandidate}`);
         break;
       }
     }
-    console.log(`[PRODUCTION] Resolved distPath: ${distPath}`);
+
+    console.log(`[BOOT] Static assets served from: ${distPath}`);
     appInstance.use(express.static(distPath, {
+      maxAge: '1h',
       setHeaders: (res, filePath) => {
         if (filePath.endsWith('.html')) {
           res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-          res.setHeader('Pragma', 'no-cache');
-          res.setHeader('Expires', '0');
         }
       }
     }));
@@ -442,21 +482,6 @@ async function startServer() {
       console.error("[REPLICATION] Failed to run subscriber:", subErr);
     });
   });
-
-  // Support direct Cloud Run custom PORT if configured and different from default 3000
-  const cloudRunPortRaw = process.env.PORT ? parseInt(process.env.PORT, 10) : null;
-  if (cloudRunPortRaw && cloudRunPortRaw !== PORT && !isNaN(cloudRunPortRaw)) {
-    try {
-      const crServer = app.listen(cloudRunPortRaw, "0.0.0.0", () => {
-        console.log(`[BOOT] Server also listening on Cloud Run port ${cloudRunPortRaw}`);
-      });
-      crServer.on("error", (errVal: any) => {
-        console.log(`[BOOT] Secondary port ${cloudRunPortRaw} notice: ${errVal?.message || errVal} (In preview environment, managed by reverse-proxy)`);
-      });
-    } catch (e: any) {
-      console.log(`[BOOT] Secondary port init note: ${e?.message || e}`);
-    }
-  }
 
   // Graceful shutdown handling for active listener
   const gracefulShutdown = (signal: string) => {

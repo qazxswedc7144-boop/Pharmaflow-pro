@@ -55,9 +55,11 @@ function isConnectionError(err: any): boolean {
   );
 }
 
+const isProduction = process.env.NODE_ENV === "production" || process.cwd().includes("dist") || (typeof __filename !== "undefined" && __filename.includes("dist"));
+
 function handleOfflineFallback<T>(operationName: string): T {
-  if (operationName === '$transaction') {
-    throw new OfflineDatabaseError('Prisma', '$transaction');
+  if (isProduction || operationName === '$transaction') {
+    throw new OfflineDatabaseError('Prisma', operationName);
   }
 
   const parts = operationName.split('.');
@@ -85,6 +87,14 @@ function getOfflineProxy(): PrismaClient {
   return new Proxy({} as any, {
     get: (_target, prop) => {
       if (prop === '$connect' || prop === '$disconnect') return async () => {};
+      
+      // In production, the proxy should throw for all operations to prevent silent failures
+      if (isProduction) {
+        return async () => {
+          throw new OfflineDatabaseError('Prisma', String(prop));
+        };
+      }
+
       if (prop === '$transaction') {
         return async () => {
           throw new OfflineDatabaseError('Prisma', '$transaction');

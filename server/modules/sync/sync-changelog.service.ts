@@ -21,7 +21,7 @@ export class SyncChangelogService {
   /**
    * Appends a new change record to the sync change log
    */
-  static recordChange(change: Omit<SyncChange, "id" | "cursor" | "createdAt">): any {
+  static recordChange(change: Omit<SyncChange, "id" | "cursor" | "createdAt">, tx?: any): any {
     const cursor = this.getNextCursor();
     const id = `CHG-${cursor}-${Math.random().toString(36).substring(2, 7)}`;
     const createdAt = new Date().toISOString();
@@ -36,6 +36,7 @@ export class SyncChangelogService {
       then(onfulfilled: any) { return Promise.resolve(fullChange).then(onfulfilled); }
     };
 
+    // 1. Record in-memory for immediate use in current request lifecycle/process
     this.changes.push(fullChange as any);
 
     // Keep memory footprint controlled
@@ -43,23 +44,30 @@ export class SyncChangelogService {
       this.changes.splice(0, this.changes.length - this.MAX_IN_MEMORY_LOGS);
     }
 
-    // Persist to Prisma SyncEvent log if database is active (non-blocking)
-    if (prisma.isConnected && prisma.isConnected()) {
-      prisma.syncEvent.create({
-        data: {
-          eventId: id,
-          clientTime: new Date(createdAt),
-          userId: change.actorId || "system",
-          deviceId: change.deviceId || "system",
-          eventType: change.operation,
-          entityType: change.entity,
-          entityId: change.entityId,
-          payload: change.payload as any,
-          branchId: change.branchId || null
-        }
-      }).catch((err) => {
-        console.warn("[SyncChangelog] Prisma sync event logging warning:", err.message);
-      });
+    // 2. Persist to Prisma SyncEvent log (Atomic if tx is provided, otherwise async)
+    const client = tx || prisma;
+    const eventPromise = client.syncEvent.create({
+      data: {
+        eventId: id,
+        tenantId: change.tenantId,
+        clientTime: new Date(createdAt),
+        userId: change.actorId || "system",
+        deviceId: change.deviceId || "system",
+        eventType: change.operation,
+        entityType: change.entity,
+        entityId: change.entityId,
+        payload: change.payload as any,
+        branchId: change.branchId || null
+      }
+    });
+
+    if (!tx) {
+      // Async fire-and-forget for non-critical legacy paths
+      if (prisma.isConnected && prisma.isConnected()) {
+        eventPromise.catch((err: any) => {
+          console.warn("[SyncChangelog] Prisma sync event logging warning:", err.message);
+        });
+      }
     }
 
     return fullChange;
