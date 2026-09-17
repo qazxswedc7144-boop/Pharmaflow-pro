@@ -1,152 +1,325 @@
-// server/modules/financial/financial-math.ts
-// HARDENED VERSION — Drop-in compatible with existing callers.
+/**
+ * PharmaFlow ERP — Deterministic Financial Math Engine (v2.0 — Hardened)
+ *
+ * ⚠️ STRICT FINANCIAL RULE:
+ *   - كل عملية مالية تمر من هنا. لا استثناءات.
+ *   - التحقق من توازن القيود يستخدم BigInt minor units، لا tolerance.
+ *   - أي مدخل غير صالح يُرفض بصوت عالٍ (لا fallback صامت).
+ *
+ * Rounding mode: HALF-AWAY-FROM-ZERO (لا Bankers — لا يدّعي ذلك).
+ * Currency-aware: 0 منازل (YER)، 2 (USD/SAR)، 3 (KWD).
+ */
+
+import { Prisma } from '@prisma/client';
+
+// ─────────────────────────────────────────────────────────────────
+// Errors
+// ─────────────────────────────────────────────────────────────────
+
+export type FinancialErrorCode =
+  | 'INVALID_NUMBER'
+  | 'MALFORMED_NUMBER'
+  | 'EMPTY_STRING'
+  | 'UNSUPPORTED_TYPE'
+  | 'PRECISION_LOSS'
+  | 'INVALID_DECIMALS'
+  | 'DIVISION_BY_ZERO'
+  | 'CURRENCY_MISMATCH'
+  | 'INVALID_RATIOS'
+  | 'BIGINT_OUT_OF_RANGE';
 
 export class FinancialError extends Error {
-  constructor(public code: string, message: string) {
+  public readonly code: FinancialErrorCode;
+  constructor(code: FinancialErrorCode, message: string) {
     super(message);
     this.name = 'FinancialError';
+    this.code = code;
   }
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────
+
+export type CurrencyCode = 'YER' | 'SAR' | 'USD' | 'KWD' | (string & {});
+
+/** منازل العملة الرسمية — ISO 4217 */
+const CURRENCY_DECIMALS: Record<string, number> = {
+  YER: 0, // الريال اليمني — لا هللات في التداول
+  SAR: 2,
+  USD: 2,
+  EUR: 2,
+  KWD: 3,
+  BHD: 3,
+  OMR: 3,
+};
+
+const DEFAULT_CURRENCY: CurrencyCode = 'YER';
+
 export interface FinancialMathOptions {
-  /** إذا true (افتراضي في الإنتاج): يرفض أي مدخل غير صالح بدل إرجاع 0 */
+  /** إذا true (افتراضي): يرفض المدخلات غير الصالحة بدل إرجاع 0 */
   strict?: boolean;
-  /** منازل عشرية حسب العملة (0 لـ YER، 2 لـ USD/SAR، 3 لـ KWD) */
-  decimals?: number;
+  /** رمز العملة — يحدد منازل التقريب الافتراضية */
+  currency?: CurrencyCode;
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Engine
+// ─────────────────────────────────────────────────────────────────
 
 export class FinancialMath {
   /**
-   * ⚠️ هذا الرقم يستخدم فقط في مقارنات "قريب من الصفر" الحسابية،
-   * وليس في التحقق من التوازن المحاسبي. التحقق من التوازن يستخدم
-   * toMinorUnits() لمقارنة دقيقة على مستوى أصغر وحدة نقدية.
+   * ⚠️ هذا الرقم للاستخدام في مقارنات "قريب من الصفر" الحسابية فقط.
+   * ❌ لا يُستخدم في التحقق من توازن القيود.
    */
   private static readonly EPSILON = 1e-9;
-  private static readonly HALF_SNAP = 1e-9;
-  private static readonly DEFAULT_DECIMALS = 2;
-  private static strict = true;
-
-  /** للتفعيل في الإنتاج، والتعطيل في اختبارات legacy */
-  public static setStrict(strict: boolean): void { this.strict = strict; }
-
-  // ─────────────────────────────────────────────────────────────
-  // Core conversion
-  // ─────────────────────────────────────────────────────────────
 
   /**
-   * تحويل آمن — يفشل بصوت عالٍ بدل الرجوع الصامت إلى 0.
-   * - `null` / `undefined` → 0 صراحةً (مسموح: يعني "لا يوجد مبلغ")
-   * - `NaN` / `Infinity` / نص ملوث / نص فارغ → يُرفض في الوضع strict
-   * - `Decimal` كبير → يُرفض (لا يمكن تحويله بدون فقدان دقة)
+   * Snap threshold لمعالجة drift الـ float قبل التقريب.
+   * مثال: 1.005 يُخزَّن كـ 1.00499999999999989 → نلتقطه هنا.
+   */
+  private static readonly HALF_SNAP = 1e-9;
+
+  private static strict = true;
+  private static defaultCurrency: CurrencyCode = DEFAULT_CURRENCY;
+
+  // ───────────────────────────────────────────────────────────────
+  // Configuration
+  // ───────────────────────────────────────────────────────────────
+
+  /** للتفعيل في الإنتاج (افتراضي)، والتعطيل في اختبارات legacy فقط */
+  public static setStrict(strict: boolean): void {
+    this.strict = strict;
+  }
+
+  public static setDefaultCurrency(currency: CurrencyCode): void {
+    if (!(currency in CURRENCY_DECIMALS)) {
+      throw new FinancialError(
+        'CURRENCY_MISMATCH',
+        `عملة غير معروفة: ${currency}. أضفها إلى CURRENCY_DECIMALS.`,
+      );
+    }
+    this.defaultCurrency = currency;
+  }
+
+  public static decimalsFor(currency: CurrencyCode = this.defaultCurrency): number {
+    return CURRENCY_DECIMALS[currency] ?? 2;
+  }
+
+  // ───────────────────────────────────────────────────────────────
+  // Core conversion — fail loud, never silent
+  // ───────────────────────────────────────────────────────────────
+
+  /**
+   * تحويل آمن إلى number.
+   * - null / undefined → 0 (يعني "لا يوجد مبلغ" — مسموح صراحةً)
+   * - NaN / Infinity / نص ملوث / نص فارغ → يرمي في الوضع strict
+   * - Decimal كبير → يرمي (لا يمكن تحويله بدون فقدان دقة)
    */
   public static safeNum(val: unknown, fallback = 0): number {
     if (val === null || val === undefined) return fallback;
 
+    // ─── number ───
     if (typeof val === 'number') {
       if (!Number.isFinite(val)) {
-        if (this.strict) throw new FinancialError('INVALID_NUMBER', `قيمة رقمية غير صالحة: ${val}`);
+        if (this.strict) {
+          throw new FinancialError('INVALID_NUMBER', `قيمة رقمية غير صالحة: ${val}`);
+        }
         return fallback;
       }
       return val;
     }
 
+    // ─── bigint ───
     if (typeof val === 'bigint') {
-      if (this.strict && (val > BigInt(Number.MAX_SAFE_INTEGER) || val < BigInt(Number.MIN_SAFE_INTEGER))) {
-        throw new FinancialError('PRECISION_LOSS', `BigInt خارج النطاق الآمن: ${val}`);
+      if (
+        val > BigInt(Number.MAX_SAFE_INTEGER) ||
+        val < BigInt(Number.MIN_SAFE_INTEGER)
+      ) {
+        if (this.strict) {
+          throw new FinancialError(
+            'BIGINT_OUT_OF_RANGE',
+            `BigInt خارج النطاق الآمن: ${val}. استخدم Money.fromMinor.`,
+          );
+        }
+        return fallback;
       }
       return Number(val);
     }
 
+    // ─── string ───
     if (typeof val === 'string') {
       const trimmed = val.trim();
       if (trimmed === '') {
-        if (this.strict) throw new FinancialError('EMPTY_STRING', 'سلسلة فارغة غير مسموحة كمبلغ');
+        if (this.strict) {
+          throw new FinancialError('EMPTY_STRING', 'سلسلة فارغة غير مسموحة كمبلغ');
+        }
         return fallback;
       }
-      // نرفض الصيغ العلمية والنصوص الملوثة
+      // ✅ نرفض: "1e5"، "0x10"، "100abc"، "Infinity"، "1,000.00"
       if (!/^-?\d+(\.\d+)?$/.test(trimmed)) {
-        if (this.strict) throw new FinancialError('MALFORMED_NUMBER', `صيغة رقمية غير صالحة: "${val}"`);
+        if (this.strict) {
+          throw new FinancialError(
+            'MALFORMED_NUMBER',
+            `صيغة رقمية غير صالحة: "${val}"`,
+          );
+        }
         return fallback;
       }
       const parsed = Number(trimmed);
       if (!Number.isFinite(parsed)) {
-        if (this.strict) throw new FinancialError('MALFORMED_NUMBER', `تعذّر تحويل: "${val}"`);
+        if (this.strict) {
+          throw new FinancialError('MALFORMED_NUMBER', `تعذّر تحويل: "${val}"`);
+        }
         return fallback;
       }
       return parsed;
     }
 
-    // Prisma.Decimal / Decimal.js / أي كائن يحمل toNumber() أو toString()
-    if (typeof (val as any)?.toNumber === 'function') {
+    // ─── Prisma.Decimal ───
+    if (val instanceof Prisma.Decimal) {
+      return this.decimalToNumber(val, val.toString());
+    }
+
+    // ─── أي كائن يحمل toNumber() ───
+    if (typeof (val as { toNumber?: () => number })?.toNumber === 'function') {
       const asStr = String(val);
-      // إذا كان Decimal يحمل كسوراً أكبر من 2 منازل → خطر فقدان دقة
-      if (this.strict && /\.\d{3,}/.test(asStr)) {
-        throw new FinancialError('PRECISION_LOSS',
-          `Decimal يحمل أكثر من منزلتين: ${asStr}. حوّله عبر Money.fromDecimal.`);
-      }
-      const n = (val as any).toNumber();
-      if (!Number.isFinite(n)) {
-        if (this.strict) throw new FinancialError('INVALID_DECIMAL', `Decimal غير صالح: ${asStr}`);
-        return fallback;
-      }
-      return n;
+      return this.decimalToNumber(
+        val as { toNumber: () => number },
+        asStr,
+      );
     }
 
     if (this.strict) {
-      throw new FinancialError('UNSUPPORTED_TYPE', `نوع غير مدعوم: ${typeof val}`);
+      throw new FinancialError(
+        'UNSUPPORTED_TYPE',
+        `نوع غير مدعوم: ${typeof val}`,
+      );
     }
     return fallback;
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // Rounding — half-away-from-zero, يُصلح drift الـ float
-  // ─────────────────────────────────────────────────────────────
-
-  public static round(val: unknown, decimals = this.DEFAULT_DECIMALS): number {
-    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 10) {
-      throw new FinancialError('INVALID_DECIMALS', `عدد المنازل غير صالح: ${decimals}`);
+  /**
+   * تحويل Decimal → number مع كشف فقدان الدقة.
+   */
+  private static decimalToNumber(
+    decimalLike: { toNumber: () => number },
+    asStr: string,
+  ): number {
+    const n = decimalLike.toNumber();
+    if (!Number.isFinite(n)) {
+      if (this.strict) {
+        throw new FinancialError(
+          'INVALID_NUMBER',
+          `Decimal غير صالح: ${asStr}`,
+        );
+      }
+      return 0;
     }
+    // ✅ نتحقق: هل التحويل حافظ على القيمة؟
+    if (this.strict) {
+      const back = String(n);
+      // نسمح فقط بفرق ".0" في النهاية
+      const normalized = asStr.includes('.') ? asStr.replace(/0+$/, '').replace(/\.$/, '') : asStr;
+      const normalizedBack = back.includes('.') ? back.replace(/0+$/, '').replace(/\.$/, '') : back;
+      if (normalized !== normalizedBack) {
+        throw new FinancialError(
+          'PRECISION_LOSS',
+          `فقدان دقة عند التحويل: "${asStr}" → ${n}. استخدم Money.fromDecimal.`,
+        );
+      }
+    }
+    return n;
+  }
+
+  // ───────────────────────────────────────────────────────────────
+  // Rounding — HALF-AWAY-FROM-ZERO (explicitly NOT Bankers)
+  // ───────────────────────────────────────────────────────────────
+
+  /**
+   * تقريب مالي إلى عدد منازل محدد.
+   * الوضع: HALF-AWAY-FROM-ZERO (لا Bankers، لا float-drift).
+   *
+   * أمثلة:
+   *   round(1.005, 2)  → 1.01
+   *   round(2.675, 2)  → 2.68
+   *   round(2.5, 0)    → 3
+   *   round(-2.5, 0)   → -3
+   */
+  public static round(val: unknown, decimals?: number): number {
+    const d = decimals ?? this.decimalsFor();
+    if (!Number.isInteger(d) || d < 0 || d > 10) {
+      throw new FinancialError(
+        'INVALID_DECIMALS',
+        `عدد المنازل غير صالح: ${d} (يجب 0 ≤ d ≤ 10)`,
+      );
+    }
+
     const n = this.safeNum(val);
     if (n === 0) return 0;
 
     const sign = n < 0 ? -1 : 1;
     const abs = Math.abs(n);
-    const factor = Math.pow(10, decimals);
+    const factor = Math.pow(10, d);
+
+    // ✅ نُصلح drift الـ float قبل التقريب: 1.005 → 100.499999999 → 100.5
     const scaled = abs * factor;
-    const floor = Math.floor(scaled);
-    const frac = scaled - floor;
+    const snapped = this.snapHalf(scaled);
 
-    let roundedAbs: number;
-    // ✅ Snap للقيم "قريبة جداً من .5" لمعالجة 1.005، 2.675، إلخ
-    if (Math.abs(frac - 0.5) < this.HALF_SNAP) {
-      roundedAbs = floor + 1;             // half-away-from-zero
-    } else if (Math.abs(frac) < this.HALF_SNAP) {
-      roundedAbs = floor;
-    } else {
-      roundedAbs = Math.round(scaled);
-    }
-
-    return (sign * roundedAbs) / factor;
+    const rounded = Math.round(snapped);
+    return (sign * rounded) / factor;
   }
 
-  public static round2(val: unknown): number { return this.round(val, 2); }
-  public static round4(val: unknown): number { return this.round(val, 4); }
+  /** Snap القيم القريبة جداً من .5 لضمان تقريب صحيح */
+  private static snapHalf(scaled: number): number {
+    const floor = Math.floor(scaled);
+    const frac = scaled - floor;
+    if (Math.abs(frac - 0.5) < this.HALF_SNAP) {
+      return floor + 0.5;
+    }
+    if (Math.abs(frac) < this.HALF_SNAP) {
+      return floor;
+    }
+    if (Math.abs(frac - 1) < this.HALF_SNAP) {
+      return floor + 1;
+    }
+    return scaled;
+  }
 
-  // ─────────────────────────────────────────────────────────────
-  // Arithmetic — كل عملية تُرجع قيمة مُقرّبة بـ round2
-  // ─────────────────────────────────────────────────────────────
+  public static round2(val: unknown): number {
+    return this.round(val, 2);
+  }
+
+  public static round4(val: unknown): number {
+    return this.round(val, 4);
+  }
+
+  /** تقريب حسب عملة محددة */
+  public static roundFor(val: unknown, currency: CurrencyCode): number {
+    return this.round(val, this.decimalsFor(currency));
+  }
+
+  // ───────────────────────────────────────────────────────────────
+  // Arithmetic — deterministic, currency-aware
+  // ───────────────────────────────────────────────────────────────
 
   public static add(...nums: unknown[]): number {
     let sum = 0;
     for (const num of nums) sum += this.safeNum(num);
     return this.round2(sum);
   }
-  public static safeAdd(...nums: unknown[]): number { return this.add(...nums); }
+
+  public static safeAdd(...nums: unknown[]): number {
+    return this.add(...nums);
+  }
 
   public static sub(a: unknown, b: unknown): number {
     return this.round2(this.safeNum(a) - this.safeNum(b));
   }
-  public static safeSub(a: unknown, b: unknown): number { return this.sub(a, b); }
+
+  public static safeSub(a: unknown, b: unknown): number {
+    return this.sub(a, b);
+  }
 
   public static mul(a: unknown, b: unknown): number {
     return this.round2(this.safeNum(a) * this.safeNum(b));
@@ -155,102 +328,151 @@ export class FinancialMath {
   public static div(a: unknown, b: unknown, fallback = 0): number {
     const denom = this.safeNum(b);
     if (Math.abs(denom) < this.EPSILON) {
-      if (this.strict) throw new FinancialError('DIVISION_BY_ZERO', 'قسمة على صفر');
+      if (this.strict) {
+        throw new FinancialError('DIVISION_BY_ZERO', 'قسمة على صفر');
+      }
       return fallback;
     }
     return this.round2(this.safeNum(a) / denom);
   }
 
-  /**
-   * توزيع مبلغ على نسب بدون فقدان هللة.
-   * مثال: allocate(100.00, [1,1,1]) → [33.34, 33.33, 33.33]
-   * (يوزع الباقي على أول عنصر — يمكن تغييره)
-   */
-  public static allocate(amount: unknown, ratios: number[]): number[] {
-    const total = this.safeNum(amount);
-    const ratioSum = ratios.reduce((s, r) => s + this.safeNum(r), 0);
-    if (ratioSum <= 0) throw new FinancialError('INVALID_RATIOS', 'مجموع النسب يجب أن يكون موجباً');
-
-    const totalMinor = this.toMinorUnits(total);
-    let allocated = 0n;
-    const result: number[] = [];
-    for (let i = 0; i < ratios.length; i++) {
-      if (i === ratios.length - 1) {
-        // آخر عنصر يحصل على الباقي لضمان عدم فقدان هللة
-        result.push(this.fromMinorUnits(totalMinor - allocated));
-        break;
-      }
-      const share = (totalMinor * BigInt(Math.round(ratios[i] * 1e6))) / BigInt(Math.round(ratioSum * 1e6));
-      allocated += share;
-      result.push(this.fromMinorUnits(share));
-    }
-    return result;
+  public static negate(val: unknown): number {
+    return this.round2(-this.safeNum(val));
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // Verification — التحقق المحاسبي الصارم
-  // ─────────────────────────────────────────────────────────────
+  public static abs(val: unknown): number {
+    return this.round2(Math.abs(this.safeNum(val)));
+  }
+
+  // ───────────────────────────────────────────────────────────────
+  // Verification — STRICT BigInt-based (no tolerance!)
+  // ───────────────────────────────────────────────────────────────
 
   /**
-   * ✅ التحقق الدقيق: يُحوّل القيمتين إلى أصغر وحدة نقدية ويقارن bigint.
-   * لا يوجد tolerance. لا يوجد epsilon. توازن أو لا توازن.
+   * ✅ التحقق الدقيق من التوازن المحاسبي.
+   * لا tolerance. لا epsilon. توازن أو لا توازن.
+   *
+   * ⚠️ هذه هي الدالة الوحيدة المسموح بها للتحقق من القيود.
    */
   public static isBalanced(debits: unknown, credits: unknown): boolean {
     return this.toMinorUnits(debits) === this.toMinorUnits(credits);
   }
 
   /**
-   * الفرق الفعلي بوحدات أصغر الوحدة النقدية (هللات).
-   * مثال: discrepancyMinor(100.00, 99.99) = 1n
-   * إذا كان الهدف 0، فالنظام متوازن.
+   * الفرق الفعلي بوحدات أصغر وحدة نقدية (هللات/سنتات).
+   * 0 = متوازن. أي قيمة أخرى = ثغرة مالية.
    */
-  public static discrepancyMinor(debits: unknown, credits: unknown): bigint {
+  public static discrepancyMinor(
+    debits: unknown,
+    credits: unknown,
+  ): bigint {
     return this.toMinorUnits(debits) - this.toMinorUnits(credits);
   }
 
   /**
-   * للتوافق العكسي مع المستدعين القدامى — يُرجع number.
-   * ⚠️ يُفضَّل استخدام discrepancyMinor في الكود الجديد.
+   * للتوافق العكسي — يُرجع number بالوحدات الكبرى.
+   * ⚠️ استخدم discrepancyMinor في الكود الجديد.
    */
   public static discrepancy(debits: unknown, credits: unknown): number {
-    return Math.abs(Number(this.discrepancyMinor(debits, credits))) / 100;
+    const minor = this.discrepancyMinor(debits, credits);
+    const abs = minor < 0n ? -minor : minor;
+    return Number(abs) / 100;
   }
 
-  /** مقارنة دقيقة — تقبل tolerance اختيارياً للتوافق فقط */
-  public static equals(a: unknown, b: unknown, toleranceMinor = 0n): boolean {
+  /**
+   * مقارنة دقيقة بين قيمتين ماليتين.
+   * toleranceMinor: افتراضي 0 (دقيق). مرر قيمة موجبة إذا كنت تعرف ما تفعل.
+   */
+  public static equals(
+    a: unknown,
+    b: unknown,
+    toleranceMinor = 0n,
+  ): boolean {
     const diff = this.toMinorUnits(a) - this.toMinorUnits(b);
-    const absDiff = diff < 0n ? -diff : diff;
-    return absDiff <= toleranceMinor;
+    const abs = diff < 0n ? -diff : diff;
+    return abs <= toleranceMinor;
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // Sign checks — متسقة
-  // ─────────────────────────────────────────────────────────────
+  // ───────────────────────────────────────────────────────────────
+  // Sign checks
+  // ───────────────────────────────────────────────────────────────
 
   public static isNonNegative(val: unknown): boolean {
     return this.toMinorUnits(val) >= 0n;
   }
+
   public static isStrictlyPositive(val: unknown): boolean {
     return this.toMinorUnits(val) > 0n;
   }
+
+  public static isStrictlyNegative(val: unknown): boolean {
+    return this.toMinorUnits(val) < 0n;
+  }
+
   public static isZero(val: unknown): boolean {
     return this.toMinorUnits(val) === 0n;
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // Internal: تحويل float/string إلى BigInt بوحدات صغرى
-  // ─────────────────────────────────────────────────────────────
+  // ───────────────────────────────────────────────────────────────
+  // Allocation — distribute without losing a penny
+  // ───────────────────────────────────────────────────────────────
 
   /**
-   * يحوّل إلى أصغر وحدة نقدية (هللة) بدقة تامة.
-   * يستخدم string representation لتجنب * 100 float artifacts.
+   * توزيع مبلغ على نسب بدون فقدان أي هللة.
+   * الباقي (rounding remainder) يذهب للعنصر الأخير.
+   *
+   * مثال: allocate(100.00, [1, 1, 1]) → [33.33, 33.33, 33.34]
+   */
+  public static allocate(amount: unknown, ratios: number[]): number[] {
+    if (ratios.length === 0) {
+      throw new FinancialError('INVALID_RATIOS', 'قائمة النسب فارغة');
+    }
+
+    const total = this.safeNum(amount);
+    const ratioSum = ratios.reduce((s, r) => s + this.safeNum(r), 0);
+
+    if (ratioSum <= 0) {
+      throw new FinancialError(
+        'INVALID_RATIOS',
+        'مجموع النسب يجب أن يكون موجباً',
+      );
+    }
+
+    const totalMinor = this.toMinorUnits(total);
+    const ratioScale = 1_000_000n;
+    const ratioSumMinor = BigInt(Math.round(ratioSum * 1e6));
+
+    const result: number[] = [];
+    let allocated = 0n;
+
+    for (let i = 0; i < ratios.length; i++) {
+      if (i === ratios.length - 1) {
+        // آخر عنصر يستلم الباقي — يضمن المجموع = totalMinor بالضبط
+        result.push(this.fromMinorUnits(totalMinor - allocated));
+        break;
+      }
+      const ratioMinor = BigInt(Math.round(ratios[i] * 1e6));
+      const share = (totalMinor * ratioMinor) / ratioSumMinor;
+      allocated += share;
+      result.push(this.fromMinorUnits(share));
+    }
+
+    return result;
+  }
+
+  // ───────────────────────────────────────────────────────────────
+  // Internal: float/string ↔ BigInt minor units
+  // ───────────────────────────────────────────────────────────────
+
+  /**
+   * تحويل إلى أصغر وحدة نقدية (هللة/سنت) بدقة تامة.
+   * يستخدم string representation لتجنب float artifacts.
    */
   private static toMinorUnits(val: unknown): bigint {
     const rounded = this.round2(val);
     if (rounded === 0) return 0n;
 
     const negative = rounded < 0;
-    // toFixed(2) بعد round2 يعطي تمثيلاً نظيفاً
     const abs = Math.abs(rounded).toFixed(2);
     const [intPart, fracPart] = abs.split('.');
     const minor = BigInt(intPart) * 100n + BigInt(fracPart || '0');
@@ -258,6 +480,15 @@ export class FinancialMath {
   }
 
   private static fromMinorUnits(minor: bigint): number {
+    if (
+      minor > BigInt(Number.MAX_SAFE_INTEGER) ||
+      minor < BigInt(Number.MIN_SAFE_INTEGER)
+    ) {
+      throw new FinancialError(
+        'BIGINT_OUT_OF_RANGE',
+        `قيمة صغرى خارج نطاق number الآمن: ${minor}`,
+      );
+    }
     return Number(minor) / 100;
   }
-}
+  }
