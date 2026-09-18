@@ -6,7 +6,7 @@ import { Branch } from '@/types';
 import { useUI } from '@/contexts/AppContext';
 import { 
   PieChart as PieChartIcon, TrendingUp, Sparkles, AlertTriangle, 
-  Package, DollarSign, Wallet2, RefreshCw, Zap
+  Package, DollarSign, Wallet2, RefreshCw, Zap, MoreVertical, Printer, FileText, FileSpreadsheet
 } from 'lucide-react';
 import { BackButton } from '@/components/shared/BackButton';
 import { 
@@ -25,6 +25,7 @@ export const BranchReports: React.FC<BranchReportsProps> = ({ onNavigate, initia
   const [selectedBranchId, setSelectedBranchId] = useState<string>("ALL");
   const [activeTab, setActiveTab] = useState<string>(initialTab || 'ALL');
   const [isLoading, setIsLoading] = useState(true);
+  const [showDropdown, setShowDropdown] = useState(false);
 
   useEffect(() => {
     if (initialTab) {
@@ -102,28 +103,28 @@ export const BranchReports: React.FC<BranchReportsProps> = ({ onNavigate, initia
     };
   }).filter(item => item.value > 0);
 
-  const COLORS = ['#1E4D4D', '#10B981', '#3B82F6', '#F59E0B'];
+  const COLORS = ['#0B4B45', '#10B981', '#3B82F6', '#F59E0B'];
 
   return (
-    <div className="space-y-6 w-full" dir="rtl">
+    <div className="px-[1px] pt-[1px] space-y-[1px] w-full" dir="rtl">
       {/* Scope Filtering header action row */}
-      <div className="bg-white rounded-[32px] p-5 sm:p-6 border border-slate-100 shadow-md flex flex-col md:flex-row justify-between items-start md:items-center gap-4 w-full">
+      <div className="bg-white rounded-[32px] p-5 sm:p-6 border border-slate-100 shadow-md flex flex-col md:flex-row justify-between items-start md:items-center gap-4 w-full relative">
         <div className="flex items-center gap-3">
           {onNavigate && (
             <BackButton onClick={() => onNavigate('dashboard')} />
           )}
           <div>
-            <h1 className="text-xl font-black text-[#1E4D4D]">لوحة تحليلات وتقارير الفروع</h1>
+            <h1 className="text-xl font-black text-[#0B4B45]">لوحة التحليلات تقارير الفروع الفروع</h1>
             <p className="text-xs text-slate-400 font-bold mt-0.5">تقارير إحصائية، قوائم تقييم المخازن، وتنبؤات كفاءة الطلب على الأدوية</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 w-full md:w-auto">
+        <div className="flex items-center gap-3 w-full md:w-auto flex-wrap md:flex-nowrap">
           <label className="text-xs font-black text-slate-400 shrink-0">نطاق التقرير:</label>
           <select
             value={selectedBranchId}
             onChange={(e) => setSelectedBranchId(e.target.value)}
-            className="flex-1 md:flex-initial px-4 py-3 bg-slate-50 border border-slate-100 text-slate-700 font-black rounded-2xl focus:outline-none focus:ring-1 focus:ring-[#1E4D4D] text-xs min-w-[200px]"
+            className="flex-1 md:flex-initial px-4 py-3 bg-slate-50 border border-slate-100 text-slate-700 font-black rounded-2xl focus:outline-none focus:ring-1 focus:ring-[#0B4B45] text-xs min-w-[200px]"
           >
             <option value="ALL">كل الفروع (تقرير مجمع)</option>
             {branches.map(b => (
@@ -138,11 +139,61 @@ export const BranchReports: React.FC<BranchReportsProps> = ({ onNavigate, initia
           >
             <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
           </button>
+
+          {/* Three Dots Menu Button */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowDropdown(!showDropdown)}
+              className="p-3 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-xl transition-all cursor-pointer border border-slate-100 flex items-center justify-center"
+              title="المزيد من الخيارات"
+            >
+              <MoreVertical size={16} />
+            </button>
+
+            {showDropdown && (
+              <div className="absolute left-0 mt-2 w-48 bg-white rounded-2xl shadow-xl border border-slate-100 py-2 z-50">
+                <button
+                  type="button"
+                  onClick={() => {
+                    addToast("جاري تصدير التقرير بتنسيق PDF...", "success");
+                    setShowDropdown(false);
+                  }}
+                  className="w-full px-4 py-2.5 text-right text-xs font-black text-slate-700 hover:bg-slate-50 flex items-center gap-2.5"
+                >
+                  <FileText size={14} className="text-[#0B4B45]" />
+                  <span>PDF</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    addToast("Exporting report to Excel...", "success");
+                    setShowDropdown(false);
+                  }}
+                  className="w-full px-4 py-2.5 text-right text-xs font-black text-slate-700 hover:bg-slate-50 flex items-center gap-2.5"
+                >
+                  <FileSpreadsheet size={14} className="text-emerald-600" />
+                  <span>Excel بالإنجليزية</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.print();
+                    setShowDropdown(false);
+                  }}
+                  className="w-full px-4 py-2.5 text-right text-xs font-black text-slate-700 hover:bg-slate-50 flex items-center gap-2.5"
+                >
+                  <Printer size={14} className="text-slate-500" />
+                  <span>طباعة</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
       {/* Sub-tabs for Smart Branch Analytics */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+      <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar pt-2">
         {[
           { id: 'ALL', label: 'التقرير الشامل', icon: PieChartIcon },
           { id: 'PERFORMANCE', label: 'أداء الفروع', icon: TrendingUp },
@@ -164,7 +215,7 @@ export const BranchReports: React.FC<BranchReportsProps> = ({ onNavigate, initia
             }}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black shrink-0 transition-all ${
               activeTab === tab.id
-                ? 'bg-[#1E4D4D] text-white shadow-md'
+                ? 'bg-[#0B4B45] text-white shadow-md'
                 : 'bg-white border border-slate-100 text-slate-600 hover:bg-slate-50'
             }`}
           >
@@ -179,7 +230,7 @@ export const BranchReports: React.FC<BranchReportsProps> = ({ onNavigate, initia
           <div className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
         </div>
       ) : (
-        <>
+        <div className="space-y-6">
           {/* Metrics summary cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             <div className="bg-white p-6 rounded-[24px] border border-slate-100 shadow-sm flex items-center gap-4">
@@ -199,7 +250,7 @@ export const BranchReports: React.FC<BranchReportsProps> = ({ onNavigate, initia
             </div>
 
             <div className="bg-white p-6 rounded-[24px] border border-slate-100 shadow-sm flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-teal-50 text-[#1E4D4D] flex items-center justify-center font-bold text-lg shadow-inner"><Wallet2 size={22} /></div>
+              <div className="w-12 h-12 rounded-xl bg-teal-50 text-[#0B4B45] flex items-center justify-center font-bold text-lg shadow-inner"><Wallet2 size={22} /></div>
               <div>
                 <span className="text-[10px] text-slate-450 font-black text-slate-400 block uppercase">إجمالي الأرباح التقديرية</span>
                 <span className="text-lg font-black text-slate-800 mt-1 block">{reportMetrics.totalProfit.toLocaleString()} {currency}</span>
@@ -231,7 +282,7 @@ export const BranchReports: React.FC<BranchReportsProps> = ({ onNavigate, initia
                     <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} />
                     <Tooltip cursor={{ fill: '#f8fafc' }} />
                     <Legend verticalAlign="top" height={36} iconType="circle" />
-                    <Bar dataKey="المبيعات" fill="#1E4D4D" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="المبيعات" fill="#0B4B45" radius={[4, 4, 0, 0]} />
                     <Bar dataKey="الأرباح" fill="#10B981" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
@@ -240,7 +291,7 @@ export const BranchReports: React.FC<BranchReportsProps> = ({ onNavigate, initia
 
             <div className="bg-white rounded-[32px] p-6 border border-slate-100 shadow-md space-y-4">
               <h3 className="text-sm font-black text-slate-800 flex items-center gap-2">
-                <PieChartIcon size={16} className="text-[#1E4D4D]" />
+                <PieChartIcon size={16} className="text-[#0B4B45]" />
                 <span>حصة توزيع المخزون المالي</span>
               </h3>
 
@@ -404,7 +455,7 @@ export const BranchReports: React.FC<BranchReportsProps> = ({ onNavigate, initia
               )}
             </div>
           </div>
-        </>
+        </div>
       )}
     </div>
   );
