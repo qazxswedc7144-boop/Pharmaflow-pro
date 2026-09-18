@@ -88,8 +88,38 @@ export class FinancialTransactionService {
     userId: string | null = null,
     ipAddress: string | null = null
   ) {
-    if (invoice.documentStatus === "POSTED" || invoice.status === "CONFIRMED") {
-      throw new Error(`ALREADY_POSTED: Invoice ${invoice.invoiceNumber} is already posted.`);
+    // ⚠️ P0 FIX: Pessimistic row-level lock on the invoice.
+    // This must run FIRST, inside the caller's transaction (tx).
+    // Prevents two concurrent transactions from both passing the state 
+    // check and posting the same invoice twice.
+    const invoiceLockRows = await tx.$queryRaw<
+      Array<{ id: string; documentStatus: string; status: string }>
+    >`
+      SELECT id, "documentStatus", status
+        FROM "invoices"
+       WHERE id = ${invoice.id}
+       FOR UPDATE
+    `;
+
+    if (invoiceLockRows.length === 0) {
+      throw new Error(
+        `INVOICE_NOT_FOUND: Invoice ${invoice.id} vanished during posting.`
+      );
+    }
+
+    const lockedInvoice = invoiceLockRows[0];
+
+    // Re-check inside the lock. No race is possible from this point on.
+    if (
+      lockedInvoice.documentStatus === 'POSTED' ||
+      lockedInvoice.documentStatus === DocumentStatus.POSTED ||
+      lockedInvoice.status === 'CONFIRMED' ||
+      lockedInvoice.status === InvoiceStatus.CONFIRMED
+    ) {
+      throw new Error(
+        `ALREADY_POSTED: Invoice ${invoice.invoiceNumber} is already posted ` +
+        `(status=${lockedInvoice.status}, documentStatus=${lockedInvoice.documentStatus}).`
+      );
     }
 
     const totalInvoiceAmount = Number(invoice.totalAmount);
@@ -279,13 +309,32 @@ export class FinancialTransactionService {
     }
 
     // 7. Lock the invoice status as "CONFIRMED" and "POSTED".
-    const updatedInvoice = await tx.invoice.update({
-      where: { id: invoice.id },
-      data: {
-        status: InvoiceStatus.CONFIRMED,
-        documentStatus: DocumentStatus.POSTED
+    // ⚠️ P0 FIX (defense in depth): Guarded update.
+    // The where clause ensures we only flip to POSTED from a 
+    // non-POSTED state. If a parallel transaction already flipped it, 
+    // Prisma throws P2025 and the whole transaction rolls back.
+    let updatedInvoice;
+    try {
+      updatedInvoice = await tx.invoice.update({
+        where: {
+          id: invoice.id,
+          documentStatus: { not: DocumentStatus.POSTED },
+          status: { not: InvoiceStatus.CONFIRMED },
+        },
+        data: {
+          status: InvoiceStatus.CONFIRMED,
+          documentStatus: DocumentStatus.POSTED,
+        },
+      });
+    } catch (err: any) {
+      if (err.code === 'P2025') {
+        throw new Error(
+          `ALREADY_POSTED_CONCURRENT: Invoice ${invoice.invoiceNumber} ` +
+          `was posted by another concurrent transaction.`
+        );
       }
-    });
+      throw err;
+    }
 
     // 8. Capture immutable Audit Trail
     await tx.auditLog.create({

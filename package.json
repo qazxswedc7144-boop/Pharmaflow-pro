@@ -7,10 +7,12 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "dev": "tsx server.ts",
-    "build": "prisma generate && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
-    "start": "node dist/server.cjs",
+    "dev": "NODE_ENV=development tsx server.ts",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --outfile=dist/server.cjs --external:express --external:helmet --external:express-rate-limit",
+    "build:vercel": "vite build",
+    "start": "NODE_ENV=production node dist/server.cjs",
     "postinstall": "prisma generate",
+    "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit && eslint src --ext ts,tsx --max-warnings 0",
     "test:sync": "tsx scripts/test-phase8.3-sync-security.ts",
     "test:inventory-engine": "tsx scripts/test-unified-inventory-engine-foundation.ts",
@@ -75,6 +77,7 @@
     "deepmerge-ts": "^8.0.0"
   },
   "devDependencies": {
+    "@vercel/node": "^3.2.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/crypto-js": "^4.2.2",
     "@types/express": "^4.17.21",
