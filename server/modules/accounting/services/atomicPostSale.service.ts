@@ -126,7 +126,8 @@ export class AtomicPostSaleService {
         tx,
         invoice,
         userId,
-        ipAddress
+        ipAddress,
+        tenantId
       );
 
       // d. Collect side-effects for sync propagation

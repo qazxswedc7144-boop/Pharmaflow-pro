@@ -36,21 +36,31 @@ export class FinancialTransactionService {
   static async postInvoiceToLedger(
     invoiceId: string,
     userId: string | null = null,
-    ipAddress: string | null = null
+    ipAddress: string | null = null,
+    tenantId: string | null = null
   ) {
     try {
       return await runInTransaction("AccountingService", async (tx) => {
         // 1. Fetch invoice and include all line items with product definitions
-        const invoice = await tx.invoice.findUnique({
-          where: { id: invoiceId },
+        // ⚠️ FAIL-CLOSED: tenantId is mandatory. Without it, no invoice 
+        // lookup should proceed — otherwise we silently revert to an 
+        // unscoped query.
+        if (!tenantId || typeof tenantId !== 'string' || tenantId.trim() === '') {
+          throw new Error(
+            'TENANT_REQUIRED: tenantId is mandatory for invoice posting.'
+          );
+        }
+
+        const invoice = await tx.invoice.findFirst({
+          where: { id: invoiceId, tenantId },
           include: { items: { include: { product: true } } }
         });
 
         if (!invoice) {
-          throw new Error(`INVOICE_NOT_FOUND: Invoice ID ${invoiceId} doesn't exist.`);
+          throw new Error(`INVOICE_NOT_FOUND: Invoice ID ${invoiceId} doesn't exist or access is unauthorized.`);
         }
 
-        return await this.executeInvoiceLedgerPosting(tx, invoice, userId, ipAddress);
+        return await this.executeInvoiceLedgerPosting(tx, invoice, userId, ipAddress, tenantId);
       });
     } catch (err: any) {
       if (
@@ -86,28 +96,35 @@ export class FinancialTransactionService {
     tx: Prisma.TransactionClient,
     invoice: Prisma.InvoiceGetPayload<{ include: { items: { include: { product: true } } } }>,
     userId: string | null = null,
-    ipAddress: string | null = null
+    ipAddress: string | null = null,
+    tenantId: string | null = null
   ) {
     // ⚠️ P0 FIX: Pessimistic row-level lock on the invoice.
     // This must run FIRST, inside the caller's transaction (tx).
     // Prevents two concurrent transactions from both passing the state 
     // check and posting the same invoice twice.
+    // P0 SECURITY: Include tenantId in lock query
+    if (!tenantId || typeof tenantId !== 'string' || tenantId.trim() === '') {
+      throw new Error(
+        'TENANT_REQUIRED: tenantId is mandatory for invoice posting.'
+      );
+    }
+
     const invoiceLockRows = await tx.$queryRaw<
       Array<{ id: string; documentStatus: string; status: string }>
     >`
       SELECT id, "documentStatus", status
         FROM "invoices"
-       WHERE id = ${invoice.id}
+       WHERE id = ${invoice.id} AND "tenantId" = ${tenantId}
        FOR UPDATE
     `;
 
-    if (invoiceLockRows.length === 0) {
+    const lockedInvoice = invoiceLockRows[0];
+    if (!lockedInvoice) {
       throw new Error(
         `INVOICE_NOT_FOUND: Invoice ${invoice.id} vanished during posting.`
       );
     }
-
-    const lockedInvoice = invoiceLockRows[0];
 
     // Re-check inside the lock. No race is possible from this point on.
     if (
@@ -274,6 +291,8 @@ export class FinancialTransactionService {
         description: `قيد ترحيل آلي لفاتورة ${invoice.type === "SALE" ? "مبيعات" : "مشتريات"} رقم #${invoice.invoiceNumber}`,
         debitTotal: sumDebits,
         creditTotal: sumCredits,
+        tenantId: invoice.tenantId ?? tenantId,
+        branchId: invoice.branchId ?? null,
         lines: {
           create: ledgerLines.map(line => ({
             accountId: line.accountId,
@@ -291,20 +310,31 @@ export class FinancialTransactionService {
       const currentAccount = await tx.account.findUnique({ where: { id: line.accountId } });
       if (!currentAccount) throw new Error(`ACCOUNT_NOT_FOUND: Ledger target ID ${line.accountId} lacks setup.`);
 
-      const updatedAccount = await tx.account.update({
-        where: { 
-          id: line.accountId,
-          version: currentAccount.version // Optimistic lock validation!
-        },
-        data: {
-          balance: { increment: adjustment },
-          version: { increment: 1 }
-        }
-      });
+      try {
+        const updatedAccount = await tx.account.update({
+          where: { 
+            id: line.accountId,
+            version: currentAccount.version, // Optimistic lock validation!
+            tenantId: invoice.tenantId ?? tenantId,
+          },
+          data: {
+            balance: { increment: adjustment },
+            version: { increment: 1 }
+          }
+        });
 
-      // Trigger safety check if update failed or missed due to race condition
-      if (!updatedAccount) {
-        throw new Error(`CONCURRENT_MUTATION_ERROR: Concurrent change detected on Account ${currentAccount.name}. Please retry operation.`);
+        // Trigger safety check if update failed or missed due to race condition
+        if (!updatedAccount) {
+          throw new Error(`CONCURRENT_MUTATION_ERROR: Concurrent change detected on Account ${currentAccount.name}. Please retry operation.`);
+        }
+      } catch (err: any) {
+        if (err.code === 'P2025') {
+          throw new Error(
+            `ACCOUNT_TENANT_MISMATCH: Account ${line.accountId} does not ` +
+            `belong to tenant ${invoice.tenantId ?? tenantId}.`
+          );
+        }
+        throw err;
       }
     }
 
@@ -315,12 +345,15 @@ export class FinancialTransactionService {
     // Prisma throws P2025 and the whole transaction rolls back.
     let updatedInvoice;
     try {
+      const updateWhere: any = {
+        id: invoice.id,
+        documentStatus: { not: DocumentStatus.POSTED },
+        status: { not: InvoiceStatus.CONFIRMED },
+        tenantId: tenantId
+      };
+
       updatedInvoice = await tx.invoice.update({
-        where: {
-          id: invoice.id,
-          documentStatus: { not: DocumentStatus.POSTED },
-          status: { not: InvoiceStatus.CONFIRMED },
-        },
+        where: updateWhere,
         data: {
           status: InvoiceStatus.CONFIRMED,
           documentStatus: DocumentStatus.POSTED,

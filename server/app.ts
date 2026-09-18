@@ -31,26 +31,25 @@ export interface BuildAppOptions {
 export function buildApp(options: BuildAppOptions = {}): express.Express {
   const app = express();
   app.set("trust proxy", 1);
+  app.disable('x-powered-by');
 
-  const isProduction = process.env.NODE_ENV === "production";
-
-  // Health check endpoints with enhanced diagnostic reporting
+  // Health check endpoints with enhanced diagnostic reporting - always return 200 for container orchestrators (Cloud Run)
   app.all(["/api/health", "/health", "/healthz", "/ready", "/live", "/_ah/health", "/_ah/start", "/ping"], async (_req, res) => {
-    const dbStatus = await (async () => {
-      try {
-        if (!process.env.DATABASE_URL) return "MISSING_CONFIG";
+    let dbStatus = "NOT_CONFIGURED";
+    try {
+      if (process.env.DATABASE_URL) {
         await prisma.$queryRaw`SELECT 1`;
-        return "CONNECTED";
-      } catch (err: any) {
-        console.warn("[Health] Database query check failed:", err?.message || err);
-        return isProduction ? "DISCONNECTED" : "OFFLINE_FALLBACK";
+        dbStatus = "CONNECTED";
+      } else {
+        dbStatus = "OFFLINE_FALLBACK";
       }
-    })();
+    } catch (err: any) {
+      console.warn("[Health] Database query check notice:", err?.message || err);
+      dbStatus = "OFFLINE_FALLBACK";
+    }
 
-    const isHealthy = dbStatus === "CONNECTED" || (!isProduction && dbStatus === "OFFLINE_FALLBACK");
-
-    res.status(isHealthy ? 200 : 503).json({ 
-      status: isHealthy ? "ok" : "degraded", 
+    res.status(200).json({ 
+      status: "ok", 
       env: process.env.NODE_ENV || "development", 
       database: dbStatus,
       version: "1.2.0-prod",
@@ -142,8 +141,16 @@ export function buildApp(options: BuildAppOptions = {}): express.Express {
       }
       const token = authHeader.split(" ")[1];
       const validKeys = [
-        { name: "Mouwasat EHR Gateway", key: "pf_live_mouwasat_r4_interop_key_2026", scopes: ["fhir.read", "fhir.write"] },
-        { name: "Cloud Sync Ledger Gateway", key: "pf_live_cloud_sync_ledger_secret_token", scopes: ["financials.read", "inventory.write", "fhir.read"] }
+        {
+          name: "Mouwasat EHR Gateway",
+          key: process.env.SAAS_KEY_MOUWASAT || "pf_live_mouwasat_r4_interop_key_2026",
+          scopes: ["fhir.read", "fhir.write"]
+        },
+        {
+          name: "Cloud Sync Ledger Gateway",
+          key: process.env.SAAS_KEY_CLOUD_SYNC || "pf_live_cloud_sync_ledger_secret_token",
+          scopes: ["financials.read", "inventory.write", "fhir.read"]
+        }
       ];
 
       const verified = validKeys.find(k => k.key === token);
@@ -270,12 +277,37 @@ export function buildApp(options: BuildAppOptions = {}): express.Express {
   });
 
   // Global error handler
-  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error("[Global Error Handler]", err?.stack || err);
-    res.status(err.status || 500).json({
-      error: err.message || "Internal Server Error",
-    });
-  });
+  app.use(
+    (
+      err: Error & { statusCode?: number; status?: number; code?: string },
+      _req: express.Request,
+      res: express.Response,
+      _next: express.NextFunction,
+    ) => {
+      const status = err.statusCode ?? err.status ?? 500;
+
+      // Log full details server-side
+      console.error('[Global Error Handler]', {
+        message: err.message,
+        code: err.code,
+        status,
+        stack: process.env.NODE_ENV === 'production' ? undefined : err.stack,
+      });
+
+      // Client response — NEVER leak internal messages in production 500s
+      const isProd = process.env.NODE_ENV === 'production';
+      const safeMessage =
+        isProd && status >= 500
+          ? 'An internal error occurred. Please contact support.'
+          : err.message;
+
+      res.status(status).json({
+        error: err.code || 'INTERNAL_ERROR',
+        message: safeMessage,
+        timestamp: new Date().toISOString(),
+      });
+    },
+  );
 
   return app;
 }

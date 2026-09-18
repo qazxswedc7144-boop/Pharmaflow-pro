@@ -354,7 +354,11 @@ export class FinancialMath {
    *
    * ⚠️ هذه هي الدالة الوحيدة المسموح بها للتحقق من القيود.
    */
-  public static isBalanced(debits: unknown, credits: unknown): boolean {
+  public static isBalanced(debits: unknown, credits: unknown, tolerance?: number): boolean {
+    if (tolerance !== undefined && tolerance > 0) {
+      const diff = Math.abs(Number(this.toMinorUnits(debits) - this.toMinorUnits(credits)) / 100);
+      return diff <= tolerance;
+    }
     return this.toMinorUnits(debits) === this.toMinorUnits(credits);
   }
 
@@ -386,11 +390,12 @@ export class FinancialMath {
   public static equals(
     a: unknown,
     b: unknown,
-    toleranceMinor = 0n,
+    toleranceMinor: bigint | number = 0n,
   ): boolean {
+    const tol = typeof toleranceMinor === 'number' ? BigInt(Math.round(toleranceMinor * 100)) : toleranceMinor;
     const diff = this.toMinorUnits(a) - this.toMinorUnits(b);
     const abs = diff < 0n ? -diff : diff;
-    return abs <= toleranceMinor;
+    return abs <= tol;
   }
 
   // ───────────────────────────────────────────────────────────────
@@ -439,7 +444,6 @@ export class FinancialMath {
     }
 
     const totalMinor = this.toMinorUnits(total);
-    const ratioScale = 1_000_000n;
     const ratioSumMinor = BigInt(Math.round(ratioSum * 1e6));
 
     const result: number[] = [];
@@ -451,7 +455,8 @@ export class FinancialMath {
         result.push(this.fromMinorUnits(totalMinor - allocated));
         break;
       }
-      const ratioMinor = BigInt(Math.round(ratios[i] * 1e6));
+      const currRatio = ratios[i] ?? 0;
+      const ratioMinor = BigInt(Math.round(currRatio * 1e6));
       const share = (totalMinor * ratioMinor) / ratioSumMinor;
       allocated += share;
       result.push(this.fromMinorUnits(share));
@@ -475,7 +480,7 @@ export class FinancialMath {
     const negative = rounded < 0;
     const abs = Math.abs(rounded).toFixed(2);
     const [intPart, fracPart] = abs.split('.');
-    const minor = BigInt(intPart) * 100n + BigInt(fracPart || '0');
+    const minor = BigInt(intPart ?? '0') * 100n + BigInt(fracPart || '0');
     return negative ? -minor : minor;
   }
 

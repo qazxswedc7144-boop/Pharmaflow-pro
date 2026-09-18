@@ -148,7 +148,8 @@ invoiceRouter.post("/post", authenticateToken, requireRoles([Role.PLATFORM_OWNER
       const result = await FinancialTransactionService.postInvoiceToLedger(
         invoiceId,
         req.user?.userId || null,
-        req.ip || "127.0.0.1"
+        req.ip || "127.0.0.1",
+        req.user?.tenantId || null
       );
 
       // Distribute replication events in real-time
