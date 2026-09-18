@@ -826,7 +826,7 @@ export class PlatformService {
       status: 'HEALTHY',
       timestamp: new Date().toISOString(),
       components: {
-        apiGateway: { status: 'HEALTHY', latencyMs: 2, details: 'Express v4 Engine on Port 3000' },
+        apiGateway: { status: 'HEALTHY', latencyMs: 2, details: `Express v4 Engine on Port ${process.env.PORT || 3000}` },
         database: { status: dbStatus, latencyMs: dbLatency, details: 'Prisma ORM with Multi-Tenant Isolation' },
         redisCache: { status: 'HEALTHY', latencyMs: 1, details: 'In-memory multi-tenant cache layer active' },
         syncEngine: { status: 'HEALTHY', latencyMs: 3, details: 'Decentralized vector clock sync engine' },

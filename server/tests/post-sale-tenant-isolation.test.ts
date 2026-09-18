@@ -23,6 +23,7 @@ const fakeTx: any = {
     update: vi.fn(),
   },
   account: {
+    findFirst: vi.fn(),
     findUnique: vi.fn(),
     update: vi.fn(),
     create: vi.fn(),
@@ -57,6 +58,7 @@ describe('FinancialTransactionService - Tenant Isolation', () => {
     });
 
     fakeTx.$queryRaw.mockResolvedValue([{ id: 'INV-1', documentStatus: 'ACTIVE', status: 'DRAFT' }]);
+    fakeTx.account.findFirst.mockResolvedValue({ id: 'ACC-1', version: 1, name: 'Cash' });
     fakeTx.account.findUnique.mockResolvedValue({ id: 'ACC-1', version: 1, name: 'Cash' });
     fakeTx.account.update.mockResolvedValue({ id: 'ACC-1' });
     fakeTx.journalEntry.create.mockResolvedValue({ id: 'JE-1' });
@@ -111,6 +113,7 @@ describe('FinancialTransactionService - Tenant Isolation', () => {
     });
 
     fakeTx.$queryRaw.mockResolvedValue([{ id: 'INV-1', documentStatus: 'ACTIVE', status: 'DRAFT' }]);
+    fakeTx.account.findFirst.mockResolvedValue({ id: 'ACC-1', version: 1, name: 'Cash' });
     fakeTx.account.findUnique.mockResolvedValue({ id: 'ACC-1', version: 1, name: 'Cash' });
     fakeTx.account.update.mockResolvedValue({ id: 'ACC-1' });
     fakeTx.journalEntry.create.mockResolvedValue({ id: 'JE-1' });

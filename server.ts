@@ -20,6 +20,9 @@ if (!process.env.JWT_SECRET) {
 if (!process.env.JWT_REFRESH_SECRET) {
   process.env.JWT_REFRESH_SECRET = 'pharmaflow-production-jwt-refresh-secret-2026';
 }
+if (!process.env.DIRECT_URL && process.env.DATABASE_URL) {
+  process.env.DIRECT_URL = process.env.DATABASE_URL;
+}
 
 // Global resilience listeners
 process.on("unhandledRejection", (reason: any) => {
@@ -88,7 +91,7 @@ async function startServer() {
     }, 500);
   }
 
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
   console.log(`[BOOT] Server configured to listen on PORT: ${PORT}`);
   
   if (process.env.NODE_ENV !== "production") {

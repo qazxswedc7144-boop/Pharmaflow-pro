@@ -12,15 +12,17 @@ export class FinancialTransactionService {
     tx: Prisma.TransactionClient,
     code: string,
     name: string,
-    type: "ASSET" | "LIABILITY" | "EQUITY" | "REVENUE" | "EXPENSE"
+    type: "ASSET" | "LIABILITY" | "EQUITY" | "REVENUE" | "EXPENSE",
+    tenantId: string
   ) {
-    let account = await tx.account.findUnique({ where: { code } });
+    let account = await tx.account.findFirst({ where: { code, tenantId } });
     if (!account) {
       account = await tx.account.create({
         data: {
           code,
           name,
           type,
+          tenantId,
           isSystem: true,
           balance: 0.00
         }
@@ -144,12 +146,12 @@ export class FinancialTransactionService {
 
     // 2. Lock core accounts involved in the transaction to prevent concurrent race conditions
     // We will bootstrap core accounts: Cash ('101001'), A/R ('101002'), Inventory ('101003'), Rev ('401001'), COGS ('501001'), A/P ('201001')
-    const cashAcc = await this.getOrCreateAccount(tx, "101001", "الصندوق والبنك (النقدية)", "ASSET");
-    const arAcc = await this.getOrCreateAccount(tx, "101002", "ذمم مدنية عملاء (أوراق القبض)", "ASSET");
-    const invAcc = await this.getOrCreateAccount(tx, "101003", "مخزون الأدوية والمواد الطبية", "ASSET");
-    const revAcc = await this.getOrCreateAccount(tx, "401001", "إيرادات المبيعات الدوائية", "REVENUE");
-    const cogsAcc = await this.getOrCreateAccount(tx, "501001", "تكلفة المبيعات (COGS)", "EXPENSE");
-    const apAcc = await this.getOrCreateAccount(tx, "201001", "ذمم دائنة موردين (أوراق الدفع)", "LIABILITY");
+    const cashAcc = await this.getOrCreateAccount(tx, "101001", "الصندوق والبنك (النقدية)", "ASSET", tenantId);
+    const arAcc = await this.getOrCreateAccount(tx, "101002", "ذمم مدنية عملاء (أوراق القبض)", "ASSET", tenantId);
+    const invAcc = await this.getOrCreateAccount(tx, "101003", "مخزون الأدوية والمواد الطبية", "ASSET", tenantId);
+    const revAcc = await this.getOrCreateAccount(tx, "401001", "إيرادات المبيعات الدوائية", "REVENUE", tenantId);
+    const cogsAcc = await this.getOrCreateAccount(tx, "501001", "تكلفة المبيعات (COGS)", "EXPENSE", tenantId);
+    const apAcc = await this.getOrCreateAccount(tx, "201001", "ذمم دائنة موردين (أوراق الدفع)", "LIABILITY", tenantId);
 
     // Lock current accounts for row-level balance security
     const accountIdsToLock = [cashAcc.id, arAcc.id, invAcc.id, revAcc.id, cogsAcc.id, apAcc.id];

@@ -3,7 +3,6 @@
 datasource db {
   provider  = "postgresql"
   url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
 }
 
 generator client {
@@ -228,7 +227,7 @@ model UserPermissionOverride {
 
 model Account {
   id           String        @id @default(uuid())
-  code         String        @unique
+  code         String
   name         String
   type         AccountType
   parentId     String?
@@ -240,9 +239,10 @@ model Account {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   journalLines JournalLine[]
-  tenantId     String?
-  tenant       Tenant?       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId     String
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
+  @@unique([code, tenantId])
   @@index([parentId])
   @@index([tenantId])
   @@map("accounts")
