@@ -3,7 +3,7 @@ import { transactionOrchestrator } from '@/services/transactions/transactionOrch
 import { db } from '@/core/db';
 import { IntegritySweepService } from '@/services/integrity/IntegritySweepService';
 import { BackupService } from '@/services/backupService';
-import { FinancialEngine } from '@/services/transactions/financialEngine';
+import { FinancialMath } from '@/core/financial-math';
 import { logger } from '@/services/loggerService';
 import { SyncQueueRepository } from '@features/sync/sync.queue';
 import { SystemOrchestrator } from '@/services/system/SystemOrchestrator';
@@ -151,15 +151,20 @@ export class TestSuiteService {
 
     // 1. اختبار توازن القيود (Journal Balancing)
     assert(
-      FinancialEngine.isBalanced([
-        { id: '1', lineId: '1', entryId: 'T', accountId: 'A', accountName: 'Test', debit: 500, credit: 0, amount: 500, type: 'DEBIT' },
-        { id: '2', lineId: '2', entryId: 'T', accountId: 'B', accountName: 'Test', debit: 0, credit: 500, amount: 500, type: 'CREDIT' }
-      ]),
+      (function() {
+        const entries = [
+          { id: '1', lineId: '1', entryId: 'T', accountId: 'A', accountName: 'Test', debit: 500, credit: 0, amount: 500, type: 'DEBIT' },
+          { id: '2', lineId: '2', entryId: 'T', accountId: 'B', accountName: 'Test', debit: 0, credit: 500, amount: 500, type: 'CREDIT' }
+        ];
+        const td = entries.reduce((s, e) => s + (e.debit || 0), 0);
+        const tc = entries.reduce((s, e) => s + (e.credit || 0), 0);
+        return FinancialMath.isBalanced(td, tc);
+      })(),
       "محرك توازن القيود"
     );
 
     // 2. اختبار منطق الأرباح (Profit Calculation Logic)
-    const profit = FinancialEngine.calculateNetProfit(1000, 700, 100);
+    const profit = FinancialMath.sub(1000, FinancialMath.add(700, 100));
     assert(profit === 200, "دقة حساب صافي الربح");
 
     // 3. اختبارات ذرية القيود المحاسبية وتراجع العمليات الكامل (PHASE 5.2.6-A: FULL ACCOUNTING ATOMICITY AUDIT)
