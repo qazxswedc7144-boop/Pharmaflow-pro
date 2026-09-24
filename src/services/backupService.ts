@@ -79,6 +79,33 @@ export function readBinaryContainer(containerBytes: Uint8Array): { salt: Uint8Ar
   };
 }
 
+/**
+ * @frozen — LEGACY BACKUP SERVICE
+ *
+ * ⚠️ DO NOT USE IN NEW CODE.
+ *
+ * This service uses a custom binary format (PFBACKUP magic bytes) 
+ * and server-side AES-256-GCM via EncryptionService.
+ *
+ * It is NOT compatible with the modern backup service at:
+ *   src/features/backup/services/BackupService.ts
+ * (which uses ZIP + manifest + client-side AES-256-CBC).
+ *
+ * Both write to db.backups but with INCOMPATIBLE schemas.
+ * A backup from one CANNOT be restored by the other.
+ *
+ * CURRENT USERS (8 files — do not migrate yet):
+ *   - src/app/App.tsx (auto-backup on launch)
+ *   - src/features/settings/components/BackupManagement.tsx
+ *   - src/features/settings/pages/SystemHealthModule.tsx
+ *   - src/features/accounting/services/accountingService.ts
+ *   - src/features/accounting/services/periodService.ts
+ *   - src/services/backupScheduler.ts
+ *   - src/services/orchestration/UnifiedBusinessWorkflowOrchestrator.ts
+ *   - src/services/system/TestSuiteService.ts
+ *
+ * MIGRATION: Deferred to a dedicated phase (see BACKUP_CONSOLIDATION.md).
+ */
 export const BackupService = {
   /**
    * PHASE 2 — SNAPSHOT ENGINE
