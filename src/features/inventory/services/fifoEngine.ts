@@ -4,8 +4,20 @@ import { Sale, Purchase, UnifiedInvoice } from '@/types';
 import { WorkerClient } from '@features/workers/worker.client';
 
 /**
- * @deprecated Use UnifiedInventoryMutationEngine for all inventory and FIFO mutations.
- * This class is maintained for legacy compatibility ONLY.
+ * Low-level FIFO primitives.
+ *
+ * ⚠️ DO NOT call directly for inventory mutations.
+ * Use UnifiedInventoryMutationEngine as the single writer.
+ *
+ * This class is an internal subsystem of UnifiedInventoryMutationEngine,
+ * providing discrete FIFO layer operations:
+ *   - addPurchaseLayer   (inward stock → new layer)
+ *   - consumeFIFO        (outward stock → consume oldest layer)
+ *   - reverseFIFO        (reversal: restore consumed layers)
+ *   - removePurchaseLayer (reversal: remove added layer)
+ *
+ * Direct usage bypasses transaction guarantees and Unified's 
+ * canonical ledger updates.
  */
 export class FIFOEngine {
 
