@@ -1,5 +1,5 @@
 // server/modules/idempotency/idempotency.repository.ts
-import { prisma } from "../../database/prisma";
+import { prisma } from "../../database/prisma.js";
 import { IdempotencyKey } from "@prisma/client";
 
 // In-memory fallback store to ensure absolute operational resilience under DB degradation or sandbox limits

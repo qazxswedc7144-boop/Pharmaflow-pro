@@ -3,9 +3,9 @@ import rateLimit from 'express-rate-limit';
 import path from 'path';
 import fs from 'fs/promises';
 import crypto from 'crypto';
-import { EncryptionService } from '../security/encryption.service';
-import { prisma } from '../database/prisma';
-import { authenticateToken, requireRoles, AuthenticatedRequest } from '../middleware/auth.middleware';
+import { EncryptionService } from '../security/encryption.service.js';
+import { prisma } from '../database/prisma.js';
+import { authenticateToken, requireRoles, AuthenticatedRequest } from '../middleware/auth.middleware.js';
 import { Role } from '@prisma/client';
 
 const router = Router();

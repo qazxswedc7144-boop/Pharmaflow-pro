@@ -1,8 +1,8 @@
 // server/modules/consolidation/calculators/inventory-valuation.calculator.ts
 // Deterministic Physical and Batch Inventory Valuation (FIFO Costing, Zero Random Multipliers)
 
-import { FinancialMath } from "../financial-math";
-import { ConsolidatedInventoryValuation } from "../consolidation.types";
+import { FinancialMath } from "../financial-math.js";
+import { ConsolidatedInventoryValuation } from "../consolidation.types.js";
 
 export interface BatchItem {
   id: string;

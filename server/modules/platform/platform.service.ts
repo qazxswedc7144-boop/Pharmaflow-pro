@@ -3,7 +3,7 @@
 
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
-import { prisma } from '../../database/prisma';
+import { prisma } from '../../database/prisma.js';
 import {
   PlatformTenantSummary,
   PlatformDashboardMetrics,
@@ -14,11 +14,11 @@ import {
   WebhookEventRecord,
   TenantLifecycleStatus,
   SystemHealthStatus
-} from './platform.types';
-import { PlatformAuditService } from './platform-audit.service';
-import { DeviceService } from '../sync/device.service';
-import { SyncMetricsService } from '../sync/sync-metrics.service';
-import { SaasService } from '../saas/saas.service';
+} from './platform.types.js';
+import { PlatformAuditService } from './platform-audit.service.js';
+import { DeviceService } from '../sync/device.service.js';
+import { SyncMetricsService } from '../sync/sync-metrics.service.js';
+import { SaasService } from '../saas/saas.service.js';
 
 export class PlatformService {
   // In-memory states for operations when database is in transition or cached

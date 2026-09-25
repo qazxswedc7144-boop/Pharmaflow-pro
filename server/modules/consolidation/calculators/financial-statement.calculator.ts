@@ -1,13 +1,13 @@
 // server/modules/consolidation/calculators/financial-statement.calculator.ts
 // Deterministic Financial Statements (Zero Multipliers, Zero Retrofit Plugs)
 
-import { FinancialMath } from "../financial-math";
-import { AggregatedLedgerState } from "./ledger-balance.calculator";
+import { FinancialMath } from "../financial-math.js";
+import { AggregatedLedgerState } from "./ledger-balance.calculator.js";
 import {
   ConsolidatedBalanceSheet,
   ConsolidatedIncomeStatement,
   EliminationRecord,
-} from "../consolidation.types";
+} from "../consolidation.types.js";
 
 export class FinancialStatementCalculator {
   /**

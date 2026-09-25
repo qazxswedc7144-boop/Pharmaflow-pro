@@ -1,7 +1,7 @@
 // server/modules/sync/sync-conflict.service.ts
 // Deterministic Conflict Detection Engine for Phase 8.3 Enterprise Synchronization
 
-import { ConflictClassificationCategory, SyncConflictCategory, SyncMutation } from "./sync.types";
+import { ConflictClassificationCategory, SyncConflictCategory, SyncMutation } from "./sync.types.js";
 
 export interface ConflictRecord {
   id: string;

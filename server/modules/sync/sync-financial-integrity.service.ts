@@ -8,8 +8,8 @@
 // 5. FIFO valuation integrity
 // 6. Conflicted / unconfirmed mutations excluded from finalized ledger reports
 
-import { prisma } from "../../database/prisma";
-import { SyncConflictService } from "./sync-conflict.service";
+import { prisma } from "../../database/prisma.js";
+import { SyncConflictService } from "./sync-conflict.service.js";
 
 export interface FinancialIntegrityReport {
   tenantId: string;

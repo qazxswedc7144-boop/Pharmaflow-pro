@@ -1,9 +1,9 @@
 // server/middleware/tenant.middleware.ts
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
-import { prisma } from "../database/prisma";
-import { runWithTenantContext, TenantContext } from "../context/tenantContext";
-import { AuthenticatedRequest } from "./auth.middleware";
+import { prisma } from "../database/prisma.js";
+import { runWithTenantContext, TenantContext } from "../context/tenantContext.js";
+import { AuthenticatedRequest } from "./auth.middleware.js";
 
 export interface TenantScopedRequest extends AuthenticatedRequest {
   tenantContext?: TenantContext;

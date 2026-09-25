@@ -1,8 +1,8 @@
 // server/services/reporting/report-query.service.ts
 // Secure Multi-Tenant & Multi-Branch Data Aggregation Layer
 
-import { prisma } from "../../database/prisma";
-import { ReportFilterParams, ReportSyncMetadata, ReportingSyncTag } from "./reporting.types";
+import { prisma } from "../../database/prisma.js";
+import { ReportFilterParams, ReportSyncMetadata, ReportingSyncTag } from "./reporting.types.js";
 
 export interface QueriedAccount {
   id: string;

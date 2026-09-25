@@ -1,10 +1,10 @@
 // server/modules/consolidation/consolidation.integrity.ts
 // Enterprise Financial Integrity Verification & Imbalance Observability
 
-import { FinancialMath } from "./financial-math";
-import { ConsolidatedBalanceSheet, ConsolidatedTrialBalance, ConsolidatedCashFlow } from "./consolidation.types";
-import { ConsolidationLogger } from "./consolidation.logger";
-import { ConsolidationMetrics } from "./consolidation.metrics";
+import { FinancialMath } from "./financial-math.js";
+import { ConsolidatedBalanceSheet, ConsolidatedTrialBalance, ConsolidatedCashFlow } from "./consolidation.types.js";
+import { ConsolidationLogger } from "./consolidation.logger.js";
+import { ConsolidationMetrics } from "./consolidation.metrics.js";
 
 export interface IntegrityCheckResult {
   isBalanced: boolean;

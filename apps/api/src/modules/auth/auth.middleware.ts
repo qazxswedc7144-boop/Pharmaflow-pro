@@ -1,8 +1,8 @@
 // apps/api/src/modules/auth/auth.middleware.ts
 import { Request, Response, NextFunction } from "express";
-import { AuthService } from "./auth.service";
-import { hasPermission, Permission } from "../../../../../packages/auth/src/rbac";
-import { AuditService } from "../audit/audit.service";
+import { AuthService } from "./auth.service.js";
+import { hasPermission, Permission } from "../../../../../packages/auth/src/rbac.js";
+import { AuditService } from "../audit/audit.service.js";
 
 export interface AuthenticatedRequest extends Request {
   user?: {

@@ -2,7 +2,7 @@
 // Phase 5 — Sequence Gap Detection & Recovery Engine
 // Guarantees contiguous event ordering and prevents silent event loss in multi-device sync
 
-import { SequenceGapInfo, SyncChange } from "./sync.types";
+import { SequenceGapInfo, SyncChange } from "./sync.types.js";
 
 export interface GapCheckResult {
   hasGap: boolean;

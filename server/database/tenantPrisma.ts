@@ -1,6 +1,6 @@
 // server/database/tenantPrisma.ts
-import { prisma } from "./prisma";
-import { getCurrentTenantId } from "../context/tenantContext";
+import { prisma } from "./prisma.js";
+import { getCurrentTenantId } from "../context/tenantContext.js";
 
 export const TENANT_OWNED_MODELS = [
   "product",

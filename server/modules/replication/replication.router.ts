@@ -1,12 +1,12 @@
 // server/modules/replication/replication.router.ts
 
 import { Router, Response } from "express";
-import { authenticateToken, requireRoles, AuthenticatedRequest } from "../../middleware/auth.middleware";
+import { authenticateToken, requireRoles, AuthenticatedRequest } from "../../middleware/auth.middleware.js";
 import { Role } from "@prisma/client";
-import { ReplicationService } from "./replication.service";
-import { ReplicationPublisher } from "./replication.publisher";
-import { ReplicationGateway } from "./replication.gateway";
-import { BusinessEventType } from "./replication.types";
+import { ReplicationService } from "./replication.service.js";
+import { ReplicationPublisher } from "./replication.publisher.js";
+import { ReplicationGateway } from "./replication.gateway.js";
+import { BusinessEventType } from "./replication.types.js";
 
 const replicationRouter = Router();
 

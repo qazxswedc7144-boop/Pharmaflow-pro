@@ -3,11 +3,11 @@ import { Router, Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
-import { prisma, OfflineDatabaseError } from "../database/prisma";
+import { prisma, OfflineDatabaseError } from "../database/prisma.js";
 import { Role } from "@prisma/client";
-import { LoginSchema } from "../../src/shared/validation/auth.schema";
-import { validateRequestBody } from "../middleware/validate";
-import { authenticateToken, requireRoles, AuthenticatedRequest } from "../middleware/auth.middleware";
+import { LoginSchema } from "../../src/shared/validation/auth.schema.js";
+import { validateRequestBody } from "../middleware/validate.js";
+import { authenticateToken, requireRoles, AuthenticatedRequest } from "../middleware/auth.middleware.js";
 
 export const authRouter = Router();
 

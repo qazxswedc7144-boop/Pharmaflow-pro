@@ -5,10 +5,10 @@
 import { randomUUID } from "crypto";
 const uuidv4 = () => randomUUID();
 
-import { ConsolidationRepository } from "./consolidation.repository";
-import { CONSOLIDATION_DEFAULTS } from "./consolidation.constants";
-import { RedisConnectionManager } from "../../database/redis";
-import { getCurrentTenantId, getCorrelationId, getRequestId } from "../../context/tenantContext";
+import { ConsolidationRepository } from "./consolidation.repository.js";
+import { CONSOLIDATION_DEFAULTS } from "./consolidation.constants.js";
+import { RedisConnectionManager } from "../../database/redis.js";
+import { getCurrentTenantId, getCorrelationId, getRequestId } from "../../context/tenantContext.js";
 import {
   ConsolidatedBalanceSheet,
   ConsolidatedIncomeStatement,
@@ -17,22 +17,22 @@ import {
   ConsolidatedInventoryValuation,
   AIConsolidationInsights,
   ConsolidationSummary,
-} from "./consolidation.types";
+} from "./consolidation.types.js";
 
-import { LedgerBalanceCalculator } from "./calculators/ledger-balance.calculator";
-import { InventoryValuationCalculator } from "./calculators/inventory-valuation.calculator";
-import { FinancialStatementCalculator } from "./calculators/financial-statement.calculator";
-import { CashFlowCalculator } from "./calculators/cash-flow.calculator";
-import { TrialBalanceCalculator } from "./calculators/trial-balance.calculator";
+import { LedgerBalanceCalculator } from "./calculators/ledger-balance.calculator.js";
+import { InventoryValuationCalculator } from "./calculators/inventory-valuation.calculator.js";
+import { FinancialStatementCalculator } from "./calculators/financial-statement.calculator.js";
+import { CashFlowCalculator } from "./calculators/cash-flow.calculator.js";
+import { TrialBalanceCalculator } from "./calculators/trial-balance.calculator.js";
 
-import { ConsolidationLogger } from "./consolidation.logger";
-import { ConsolidationMetrics } from "./consolidation.metrics";
-import { ConsolidationAuditService } from "./consolidation.audit";
-import { ConsolidationIntegrityMonitor } from "./consolidation.integrity";
+import { ConsolidationLogger } from "./consolidation.logger.js";
+import { ConsolidationMetrics } from "./consolidation.metrics.js";
+import { ConsolidationAuditService } from "./consolidation.audit.js";
+import { ConsolidationIntegrityMonitor } from "./consolidation.integrity.js";
 import {
   ConsolidationError,
   ConsolidationCalculationError,
-} from "./consolidation.errors";
+} from "./consolidation.errors.js";
 
 export class ConsolidationService {
   private static async getGeminiClient(): Promise<any> {

@@ -1,8 +1,8 @@
 // server/modules/replication/replication.publisher.ts
 
-import { prisma } from "../../database/prisma";
-import { RedisConnectionManager } from "../../database/redis";
-import { ReplicationEvent, BusinessEventType } from "./replication.types";
+import { prisma } from "../../database/prisma.js";
+import { RedisConnectionManager } from "../../database/redis.js";
+import { ReplicationEvent, BusinessEventType } from "./replication.types.js";
 import { randomUUID } from "crypto";
 import { EventEmitter } from "events";
 

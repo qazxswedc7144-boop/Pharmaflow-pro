@@ -1,7 +1,7 @@
 // apps/api/src/modules/auth/auth.service.ts
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { prisma } from "../../../../../server/database/prisma";
+import { prisma } from "../../../../../server/database/prisma.js";
 import { Role } from "@prisma/client";
 
 const getJwtSecret = () => process.env.JWT_SECRET || 'pharmaflow-local-development-jwt-secure-secret-2026';

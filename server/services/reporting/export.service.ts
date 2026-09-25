@@ -1,7 +1,7 @@
 // server/services/reporting/export.service.ts
 // Enterprise PDF & Excel Exporter with Arabic RTL Support
 
-import { ExportFormat } from "./reporting.types";
+import { ExportFormat } from "./reporting.types.js";
 
 export interface ExportOptions {
   format: ExportFormat;

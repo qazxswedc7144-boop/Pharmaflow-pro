@@ -5,4 +5,4 @@ export {
   type FinancialErrorCode,
   type CurrencyCode,
   type FinancialMathOptions,
-} from '../../../src/core/financial-math';
+} from '../../../src/core/financial-math.js';

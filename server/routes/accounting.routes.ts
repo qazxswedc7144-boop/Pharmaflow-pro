@@ -1,13 +1,13 @@
 // server/routes/accounting.routes.ts
 import { Router, Response } from "express";
-import { tenantPrisma as prisma } from "../database/tenantPrisma";
-import { OfflineDatabaseError } from "../database/prisma";
-import { runInTransaction } from "../core/database/transactionGuard";
-import { authenticateToken, requireRoles, AuthenticatedRequest } from "../middleware/auth.middleware";
+import { tenantPrisma as prisma } from "../database/tenantPrisma.js";
+import { OfflineDatabaseError } from "../database/prisma.js";
+import { runInTransaction } from "../core/database/transactionGuard.js";
+import { authenticateToken, requireRoles, AuthenticatedRequest } from "../middleware/auth.middleware.js";
 import { Prisma, Role } from "@prisma/client";
-import { LockingService } from "../modules/locking/locking.service";
-import { AccountingEntrySchema } from "../../src/shared/validation/accounting.schema";
-import { validateRequestBody } from "../middleware/validate";
+import { LockingService } from "../modules/locking/locking.service.js";
+import { AccountingEntrySchema } from "../../src/shared/validation/accounting.schema.js";
+import { validateRequestBody } from "../middleware/validate.js";
 
 export const accountingRouter = Router();
 

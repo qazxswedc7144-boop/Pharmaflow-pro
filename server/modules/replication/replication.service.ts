@@ -1,8 +1,8 @@
 // server/modules/replication/replication.service.ts
 
-import { prisma } from "../../database/prisma";
-import { ReplicationEvent, BusinessEventType, SyncRecoveryRequest, SyncRecoveryResponse } from "./replication.types";
-import { RedisConnectionManager } from "../../database/redis";
+import { prisma } from "../../database/prisma.js";
+import { ReplicationEvent, BusinessEventType, SyncRecoveryRequest, SyncRecoveryResponse } from "./replication.types.js";
+import { RedisConnectionManager } from "../../database/redis.js";
 
 export class ReplicationService {
   /**

@@ -1,8 +1,8 @@
 // server/services/reporting/report-audit.service.ts
 // Enterprise Financial Reporting Audit Logging Service
 
-import { prisma } from "../../database/prisma";
-import { ReportType, ExportFormat } from "./reporting.types";
+import { prisma } from "../../database/prisma.js";
+import { ReportType, ExportFormat } from "./reporting.types.js";
 
 export type ReportAuditAction =
   | "REPORT_GENERATED"

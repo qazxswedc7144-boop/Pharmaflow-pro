@@ -1,9 +1,9 @@
 // server/modules/locking/locking.router.ts
 
 import { Router, Response } from "express";
-import { authenticateToken, requireRoles, AuthenticatedRequest } from "../../middleware/auth.middleware";
+import { authenticateToken, requireRoles, AuthenticatedRequest } from "../../middleware/auth.middleware.js";
 import { Role } from "@prisma/client";
-import { LockingService } from "./locking.service";
+import { LockingService } from "./locking.service.js";
 
 export const lockingRouter = Router();
 

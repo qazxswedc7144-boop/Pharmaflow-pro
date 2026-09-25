@@ -1,7 +1,7 @@
 // server/modules/consolidation/consolidation.logger.ts
 // Enterprise Structured JSON Logger for Financial Consolidation
 
-import { getTenantContext } from "../../context/tenantContext";
+import { getTenantContext } from "../../context/tenantContext.js";
 
 export type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
 

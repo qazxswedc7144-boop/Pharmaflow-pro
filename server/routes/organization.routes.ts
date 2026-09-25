@@ -1,11 +1,11 @@
 // server/routes/organization.routes.ts
 import { Router, Response } from "express";
-import { authenticateToken, AuthenticatedRequest } from "../middleware/auth.middleware";
-import { tenantContextMiddleware } from "../middleware/tenant.middleware";
-import { requirePermission } from "../middleware/permission.middleware";
-import { prisma } from "../database/prisma";
-import { RoleService } from "../services/rbac/role.service";
-import { PermissionService } from "../services/rbac/permission.service";
+import { authenticateToken, AuthenticatedRequest } from "../middleware/auth.middleware.js";
+import { tenantContextMiddleware } from "../middleware/tenant.middleware.js";
+import { requirePermission } from "../middleware/permission.middleware.js";
+import { prisma } from "../database/prisma.js";
+import { RoleService } from "../services/rbac/role.service.js";
+import { PermissionService } from "../services/rbac/permission.service.js";
 
 const router = Router();
 

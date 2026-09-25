@@ -1,8 +1,8 @@
 // server/modules/idempotency/idempotency.service.ts
 import crypto from "crypto";
 import pino from "pino";
-import { IdempotencyRepository } from "./idempotency.repository";
-import { IdempotencyMetrics } from "./idempotency.types";
+import { IdempotencyRepository } from "./idempotency.repository.js";
+import { IdempotencyMetrics } from "./idempotency.types.js";
 
 const logger = pino({
   level: process.env.NODE_ENV === "production" ? "info" : "debug",

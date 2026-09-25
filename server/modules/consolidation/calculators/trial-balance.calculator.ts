@@ -4,9 +4,9 @@
 import { randomUUID } from "crypto";
 const uuidv4 = () => randomUUID();
 
-import { FinancialMath } from "../financial-math";
-import { AggregatedLedgerState } from "./ledger-balance.calculator";
-import { ConsolidatedTrialBalance, ConsolidatedTrialBalanceRow, EliminationRecord } from "../consolidation.types";
+import { FinancialMath } from "../financial-math.js";
+import { AggregatedLedgerState } from "./ledger-balance.calculator.js";
+import { ConsolidatedTrialBalance, ConsolidatedTrialBalanceRow, EliminationRecord } from "../consolidation.types.js";
 
 export class TrialBalanceCalculator {
   public static calculate(

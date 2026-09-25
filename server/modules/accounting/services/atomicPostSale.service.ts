@@ -1,10 +1,10 @@
 // server/modules/accounting/services/atomicPostSale.service.ts
-import { prisma } from "../../../database/prisma";
-import { runInTransaction } from "../../../core/database/transactionGuard";
-import { FinancialTransactionService } from "./financialTransaction.service";
+import { prisma } from "../../../database/prisma.js";
+import { runInTransaction } from "../../../core/database/transactionGuard.js";
+import { FinancialTransactionService } from "./financialTransaction.service.js";
 import { InvoiceStatus, DocumentStatus } from "@prisma/client";
-import { InvoiceSchema } from "../../../../src/shared/validation/invoice.schema";
-import { SyncEffect } from "../../sync/sync.types";
+import { InvoiceSchema } from "../../../../src/shared/validation/invoice.schema.js";
+import { SyncEffect } from "../../sync/sync.types.js";
 
 export class AtomicPostSaleService {
   /**

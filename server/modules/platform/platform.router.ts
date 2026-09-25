@@ -2,11 +2,11 @@
 // Platform Owner Control Plane Express API Router for Phase 8.6
 
 import { Router, Request, Response } from 'express';
-import { authenticateToken, AuthenticatedRequest } from '../../middleware/auth.middleware';
-import { requirePermission } from '../../middleware/permission.middleware';
-import { PlatformService } from './platform.service';
-import { PlatformAuditService } from './platform-audit.service';
-import { DeviceService } from '../sync/device.service';
+import { authenticateToken, AuthenticatedRequest } from '../../middleware/auth.middleware.js';
+import { requirePermission } from '../../middleware/permission.middleware.js';
+import { PlatformService } from './platform.service.js';
+import { PlatformAuditService } from './platform-audit.service.js';
+import { DeviceService } from '../sync/device.service.js';
 
 export const platformRouter = Router();
 

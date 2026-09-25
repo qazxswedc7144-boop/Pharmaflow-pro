@@ -1,8 +1,8 @@
 // server/modules/accounting/services/financialTransaction.service.ts
-import { runInTransaction } from "../../../core/database/transactionGuard";
-import { FifoService } from "../../inventory/services/fifo.service";
+import { runInTransaction } from "../../../core/database/transactionGuard.js";
+import { FifoService } from "../../inventory/services/fifo.service.js";
 import { Prisma, InvoiceStatus, DocumentStatus, InvoiceType } from "@prisma/client";
-import { prisma } from "../../../database/prisma";
+import { prisma } from "../../../database/prisma.js";
 
 export class FinancialTransactionService {
   /**

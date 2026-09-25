@@ -3,13 +3,13 @@
 
 import { Router, Response } from "express";
 import { randomUUID } from "crypto";
-import { authenticateToken, requireRoles, AuthenticatedRequest } from "../../middleware/auth.middleware";
-import { ConsolidationService } from "./consolidation.service";
-import { getCurrentTenantId, runWithTenantContext } from "../../context/tenantContext";
+import { authenticateToken, requireRoles, AuthenticatedRequest } from "../../middleware/auth.middleware.js";
+import { ConsolidationService } from "./consolidation.service.js";
+import { getCurrentTenantId, runWithTenantContext } from "../../context/tenantContext.js";
 import { Role } from "@prisma/client";
-import { ConsolidationLogger } from "./consolidation.logger";
-import { ConsolidationMetrics } from "./consolidation.metrics";
-import { formatErrorResponse, TenantIsolationError } from "./consolidation.errors";
+import { ConsolidationLogger } from "./consolidation.logger.js";
+import { ConsolidationMetrics } from "./consolidation.metrics.js";
+import { formatErrorResponse, TenantIsolationError } from "./consolidation.errors.js";
 
 const router = Router();
 

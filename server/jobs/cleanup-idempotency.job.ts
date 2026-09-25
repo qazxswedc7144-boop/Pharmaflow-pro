@@ -1,5 +1,5 @@
 // server/jobs/cleanup-idempotency.job.ts
-import { IdempotencyRepository } from "../modules/idempotency/idempotency.repository";
+import { IdempotencyRepository } from "../modules/idempotency/idempotency.repository.js";
 import pino from "pino";
 
 const logger = pino({

@@ -1,7 +1,7 @@
 // server/modules/idempotency/idempotency.middleware.ts
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
-import { IdempotencyService } from "./idempotency.service";
+import { IdempotencyService } from "./idempotency.service.js";
 
 export interface AuthenticatedRequest extends Request {
   user?: {

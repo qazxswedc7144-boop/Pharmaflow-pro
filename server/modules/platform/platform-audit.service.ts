@@ -1,8 +1,8 @@
 // server/modules/platform/platform-audit.service.ts
 // Platform Audit and Security Event Pipeline for Phase 8.6
 
-import { PlatformAuditEventRecord, SecurityEventSeverity } from './platform.types';
-import { prisma } from '../../database/prisma';
+import { PlatformAuditEventRecord, SecurityEventSeverity } from './platform.types.js';
+import { prisma } from '../../database/prisma.js';
 
 export class PlatformAuditService {
   private static memoryLogs: PlatformAuditEventRecord[] = [];

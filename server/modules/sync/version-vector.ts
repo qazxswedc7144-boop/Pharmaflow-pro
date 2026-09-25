@@ -2,7 +2,7 @@
 // Phase 5 — Distributed Version Vector & Causality Engine
 // Mathematically rigorous causality tracking for multi-device concurrent operations
 
-import { VersionVector } from "./sync.types";
+import { VersionVector } from "./sync.types.js";
 
 export type VectorRelation = "EQUAL" | "DOMINATES" | "DOMINATED_BY" | "CONCURRENT";
 

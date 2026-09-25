@@ -1,11 +1,11 @@
 // server/routes/rbac.routes.ts
 import { Router, Response } from "express";
-import { authenticateToken, AuthenticatedRequest } from "../middleware/auth.middleware";
-import { tenantContextMiddleware } from "../middleware/tenant.middleware";
-import { requirePermission } from "../middleware/permission.middleware";
-import { PermissionService } from "../services/rbac/permission.service";
-import { RoleService } from "../services/rbac/role.service";
-import { AuthorizationService } from "../services/rbac/authorization.service";
+import { authenticateToken, AuthenticatedRequest } from "../middleware/auth.middleware.js";
+import { tenantContextMiddleware } from "../middleware/tenant.middleware.js";
+import { requirePermission } from "../middleware/permission.middleware.js";
+import { PermissionService } from "../services/rbac/permission.service.js";
+import { RoleService } from "../services/rbac/role.service.js";
+import { AuthorizationService } from "../services/rbac/authorization.service.js";
 
 const router = Router();
 

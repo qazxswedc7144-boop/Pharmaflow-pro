@@ -1,21 +1,21 @@
 // server/modules/sync/sync-processor.service.ts
 // Transactional Mutation Processing Engine for Phase 8.3 Enterprise Synchronization
 
-import { prisma } from "../../database/prisma";
+import { prisma } from "../../database/prisma.js";
 import {
   SyncEnvelope,
   SyncMutation,
   PerMutationResult,
   SyncPushResponse,
   SYNC_PROTOCOL_VERSION
-} from "./sync.types";
-import { DeviceService } from "./device.service";
-import { SyncIdempotencyService } from "./sync-idempotency.service";
-import { SyncConflictService } from "./sync-conflict.service";
-import { SyncChangelogService } from "./sync-changelog.service";
-import { SyncAuditService } from "./sync-audit.service";
-import { AuthorizationService } from "../../services/rbac/authorization.service";
-import { AtomicPostSaleService } from "../accounting/services/atomicPostSale.service";
+} from "./sync.types.js";
+import { DeviceService } from "./device.service.js";
+import { SyncIdempotencyService } from "./sync-idempotency.service.js";
+import { SyncConflictService } from "./sync-conflict.service.js";
+import { SyncChangelogService } from "./sync-changelog.service.js";
+import { SyncAuditService } from "./sync-audit.service.js";
+import { AuthorizationService } from "../../services/rbac/authorization.service.js";
+import { AtomicPostSaleService } from "../accounting/services/atomicPostSale.service.js";
 
 const KNOWN_ENTITIES = new Set([
   "INVOICE",

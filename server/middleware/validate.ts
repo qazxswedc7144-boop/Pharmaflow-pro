@@ -1,8 +1,8 @@
 // server/middleware/validate.ts
 import { Request, Response, NextFunction } from "express";
 import { ZodSchema, ZodError } from "zod";
-import { sanitizeObject } from "../../src/shared/security/sanitize";
-import { formatZodFault } from "../../src/shared/faults/validationFault";
+import { sanitizeObject } from "../../src/shared/security/sanitize.js";
+import { formatZodFault } from "../../src/shared/faults/validationFault.js";
 
 /**
  * Express middleware to sanitize and validate request body details using schemas and sanitization layers.

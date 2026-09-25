@@ -1,6 +1,6 @@
 // apps/api/src/modules/audit/audit.repository.ts
-import { prisma } from "../../../../../server/database/prisma";
-import { AuditLogPayload } from "./audit.types";
+import { prisma } from "../../../../../server/database/prisma.js";
+import { AuditLogPayload } from "./audit.types.js";
 
 export class AuditRepository {
   /**

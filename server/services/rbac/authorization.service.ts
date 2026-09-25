@@ -1,8 +1,8 @@
 // server/services/rbac/authorization.service.ts
-import { UserIdentityContext, AuthorizationEvaluationContext } from './types';
-import { PermissionService } from './permission.service';
-import { RoleService } from './role.service';
-import { PolicyEngine } from './policy.engine';
+import { UserIdentityContext, AuthorizationEvaluationContext } from './types.js';
+import { PermissionService } from './permission.service.js';
+import { RoleService } from './role.service.js';
+import { PolicyEngine } from './policy.engine.js';
 
 export interface AuthorizationDecision {
   allowed: boolean;

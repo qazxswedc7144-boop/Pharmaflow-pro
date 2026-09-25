@@ -1,17 +1,17 @@
 // server/routes/invoice.routes.ts
 import { Router, Response } from "express";
 import { z } from "zod";
-import { tenantPrisma as prisma } from "../database/tenantPrisma";
-import { OfflineDatabaseError } from "../database/prisma";
-import { FinancialTransactionService } from "../modules/accounting/services/financialTransaction.service";
-import { authenticateToken, requireRoles, AuthenticatedRequest } from "../middleware/auth.middleware";
-import { LockingService } from "../modules/locking/locking.service";
-import { ReplicationPublisher } from "../modules/replication/replication.publisher";
+import { tenantPrisma as prisma } from "../database/tenantPrisma.js";
+import { OfflineDatabaseError } from "../database/prisma.js";
+import { FinancialTransactionService } from "../modules/accounting/services/financialTransaction.service.js";
+import { authenticateToken, requireRoles, AuthenticatedRequest } from "../middleware/auth.middleware.js";
+import { LockingService } from "../modules/locking/locking.service.js";
+import { ReplicationPublisher } from "../modules/replication/replication.publisher.js";
 import { InvoiceStatus, DocumentStatus, Role } from "@prisma/client";
-import { InvoiceSchema } from "../../src/shared/validation/invoice.schema";
-import { validateRequestBody } from "../middleware/validate";
-import { UUIDSchema } from "../../src/shared/validation/common.schema";
-import { SaasService } from "../modules/saas/saas.service";
+import { InvoiceSchema } from "../../src/shared/validation/invoice.schema.js";
+import { validateRequestBody } from "../middleware/validate.js";
+import { UUIDSchema } from "../../src/shared/validation/common.schema.js";
+import { SaasService } from "../modules/saas/saas.service.js";
 
 export const invoiceRouter = Router();
 

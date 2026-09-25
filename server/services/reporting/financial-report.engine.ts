@@ -22,8 +22,8 @@ import {
   ReportFilterParams,
   ReportHeaderMetadata,
   BalanceSheetItem
-} from "./reporting.types";
-import { ReportQueryService, QueriedJournalLine } from "./report-query.service";
+} from "./reporting.types.js";
+import { ReportQueryService, QueriedJournalLine } from "./report-query.service.js";
 
 export class FinancialReportEngine {
   /**

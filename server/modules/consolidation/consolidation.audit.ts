@@ -2,8 +2,8 @@
 // Enterprise Centralized Audit Service for Financial Consolidation
 
 import crypto from "crypto";
-import { ConsolidationRepository } from "./consolidation.repository";
-import { ConsolidationLogger } from "./consolidation.logger";
+import { ConsolidationRepository } from "./consolidation.repository.js";
+import { ConsolidationLogger } from "./consolidation.logger.js";
 
 export interface ConsolidationAuditEvent {
   eventId: string;

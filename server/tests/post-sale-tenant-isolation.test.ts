@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { FinancialTransactionService } from '../modules/accounting/services/financialTransaction.service';
+import { FinancialTransactionService } from '../modules/accounting/services/financialTransaction.service.js';
 import { DocumentStatus, InvoiceStatus, InvoiceType } from '@prisma/client';
 
 // Mock dependencies

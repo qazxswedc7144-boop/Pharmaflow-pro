@@ -5,8 +5,8 @@ import { IncomingMessage, Server as HttpServer } from "http";
 import url from "url";
 import jwt from "jsonwebtoken";
 import { Role } from "@prisma/client";
-import { ReplicationSubscriber } from "./replication.subscriber";
-import { ReplicationEvent, ClientConnectionInfo } from "./replication.types";
+import { ReplicationSubscriber } from "./replication.subscriber.js";
+import { ReplicationEvent, ClientConnectionInfo } from "./replication.types.js";
 
 const getJwtSecret = () => process.env.JWT_SECRET || 'pharmaflow-local-development-jwt-secure-secret-2026';
 const AUTHORIZED_ROLES: string[] = [Role.ADMIN, Role.ACCOUNTANT, Role.PHARMACIST, Role.INVENTORY_MANAGER, Role.TENANT_ADMIN, Role.PLATFORM_OWNER];

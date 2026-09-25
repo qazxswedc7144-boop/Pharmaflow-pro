@@ -1,8 +1,8 @@
 // server/middleware/permission.middleware.ts
 import { Request, Response, NextFunction } from "express";
-import { AuthenticatedRequest } from "./auth.middleware";
-import { AuthorizationService } from "../services/rbac/authorization.service";
-import { UserIdentityContext } from "../services/rbac/types";
+import { AuthenticatedRequest } from "./auth.middleware.js";
+import { AuthorizationService } from "../services/rbac/authorization.service.js";
+import { UserIdentityContext } from "../services/rbac/types.js";
 
 export function requirePermission(permission: string) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {

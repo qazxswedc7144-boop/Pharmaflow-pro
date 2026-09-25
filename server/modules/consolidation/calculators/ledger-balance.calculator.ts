@@ -1,8 +1,8 @@
 // server/modules/consolidation/calculators/ledger-balance.calculator.ts
 // Single Source of Truth for General Ledger Account Aggregations
 
-import { FinancialMath } from "../financial-math";
-import { CONSOLIDATION_DEFAULTS } from "../consolidation.constants";
+import { FinancialMath } from "../financial-math.js";
+import { CONSOLIDATION_DEFAULTS } from "../consolidation.constants.js";
 
 export type LedgerAccountCategory =
   | "CASH"

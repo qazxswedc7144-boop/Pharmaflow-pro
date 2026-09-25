@@ -2,8 +2,8 @@
 // Logical Idempotency Engine for Phase 8.3 Enterprise Synchronization
 
 import crypto from "crypto";
-import { prisma } from "../../database/prisma";
-import { PerMutationResult } from "./sync.types";
+import { prisma } from "../../database/prisma.js";
+import { PerMutationResult } from "./sync.types.js";
 
 interface StoredIdempotencyRecord {
   scopedKey: string;

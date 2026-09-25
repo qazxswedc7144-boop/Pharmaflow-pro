@@ -2,18 +2,18 @@
 // Enterprise Synchronization REST Router for Phase 8.3
 
 import { Router, Request, Response } from "express";
-import { authenticateToken, AuthenticatedRequest } from "../../middleware/auth.middleware";
-import { tenantContextMiddleware } from "../../middleware/tenant.middleware";
-import { SyncProcessorService } from "./sync-processor.service";
-import { SyncChangelogService } from "./sync-changelog.service";
-import { DeviceService } from "./device.service";
-import { SyncConflictService } from "./sync-conflict.service";
-import { SyncAuditService } from "./sync-audit.service";
-import { SyncMetricsService } from "./sync-metrics.service";
-import { SyncFinancialIntegrityService } from "./sync-financial-integrity.service";
-import { CompensatingTransactionService } from "./compensating-transaction.service";
-import { SyncEnvelope, SyncPullRequest, SYNC_PROTOCOL_VERSION } from "./sync.types";
-import { prisma } from "../../database/prisma";
+import { authenticateToken, AuthenticatedRequest } from "../../middleware/auth.middleware.js";
+import { tenantContextMiddleware } from "../../middleware/tenant.middleware.js";
+import { SyncProcessorService } from "./sync-processor.service.js";
+import { SyncChangelogService } from "./sync-changelog.service.js";
+import { DeviceService } from "./device.service.js";
+import { SyncConflictService } from "./sync-conflict.service.js";
+import { SyncAuditService } from "./sync-audit.service.js";
+import { SyncMetricsService } from "./sync-metrics.service.js";
+import { SyncFinancialIntegrityService } from "./sync-financial-integrity.service.js";
+import { CompensatingTransactionService } from "./compensating-transaction.service.js";
+import { SyncEnvelope, SyncPullRequest, SYNC_PROTOCOL_VERSION } from "./sync.types.js";
+import { prisma } from "../../database/prisma.js";
 
 export const syncRouter = Router();
 

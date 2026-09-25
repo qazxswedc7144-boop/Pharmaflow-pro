@@ -1,8 +1,8 @@
 // server/modules/sync/device.service.ts
 // Device Identity and Access Control Engine for Phase 8.3 Enterprise Synchronization
 
-import { DeviceIdentity, DeviceStatus, SYNC_PROTOCOL_VERSION } from "./sync.types";
-import { prisma } from "../../database/prisma";
+import { DeviceIdentity, DeviceStatus, SYNC_PROTOCOL_VERSION } from "./sync.types.js";
+import { prisma } from "../../database/prisma.js";
 
 export class DeviceService {
   // In-memory caching layer with durable Prisma fallback

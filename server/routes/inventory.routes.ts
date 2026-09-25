@@ -1,14 +1,14 @@
 // server/routes/inventory.routes.ts
 import { Router, Response } from "express";
-import { tenantPrisma as prisma } from "../database/tenantPrisma";
-import { runInTransaction } from "../core/database/transactionGuard";
-import { FifoService } from "../modules/inventory/services/fifo.service";
-import { authenticateToken, requireRoles, AuthenticatedRequest } from "../middleware/auth.middleware";
+import { tenantPrisma as prisma } from "../database/tenantPrisma.js";
+import { runInTransaction } from "../core/database/transactionGuard.js";
+import { FifoService } from "../modules/inventory/services/fifo.service.js";
+import { authenticateToken, requireRoles, AuthenticatedRequest } from "../middleware/auth.middleware.js";
 import { Role } from "@prisma/client";
-import { LockingService } from "../modules/locking/locking.service";
-import { ReplicationPublisher } from "../modules/replication/replication.publisher";
-import { StockMoveSchema } from "../../src/shared/validation/inventory.schema";
-import { validateRequestBody } from "../middleware/validate";
+import { LockingService } from "../modules/locking/locking.service.js";
+import { ReplicationPublisher } from "../modules/replication/replication.publisher.js";
+import { StockMoveSchema } from "../../src/shared/validation/inventory.schema.js";
+import { validateRequestBody } from "../middleware/validate.js";
 
 export const inventoryRouter = Router();
 

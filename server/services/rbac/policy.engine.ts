@@ -1,5 +1,5 @@
 // server/services/rbac/policy.engine.ts
-import { UserIdentityContext } from './types';
+import { UserIdentityContext } from './types.js';
 
 export class PolicyEngine {
   /**

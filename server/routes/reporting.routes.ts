@@ -2,13 +2,13 @@
 // Enterprise Financial Reporting API Routes
 
 import { Router, Request, Response } from "express";
-import { ReportBuilderService } from "../services/reporting/report-builder.service";
-import { ReportType, ExportFormat } from "../services/reporting/reporting.types";
-import { reportCacheService } from "../services/reporting/report-cache.service";
-import { ReportAuditService } from "../services/reporting/report-audit.service";
-import { authenticateToken } from "../middleware/auth.middleware";
-import { tenantContextMiddleware } from "../middleware/tenant.middleware";
-import { subscriptionGuard } from "../middleware/subscription.middleware";
+import { ReportBuilderService } from "../services/reporting/report-builder.service.js";
+import { ReportType, ExportFormat } from "../services/reporting/reporting.types.js";
+import { reportCacheService } from "../services/reporting/report-cache.service.js";
+import { ReportAuditService } from "../services/reporting/report-audit.service.js";
+import { authenticateToken } from "../middleware/auth.middleware.js";
+import { tenantContextMiddleware } from "../middleware/tenant.middleware.js";
+import { subscriptionGuard } from "../middleware/subscription.middleware.js";
 
 export const reportingRouter = Router();
 

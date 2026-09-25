@@ -5,12 +5,12 @@ import {
   ReportType,
   ReportFilterParams,
   ExportFormat
-} from "./reporting.types";
-import { FinancialReportEngine } from "./financial-report.engine";
-import { reportCacheService } from "./report-cache.service";
-import { ReportAuditService } from "./report-audit.service";
-import { ExportService, ExportOptions } from "./export.service";
-import { AuthorizationService } from "../rbac/authorization.service";
+} from "./reporting.types.js";
+import { FinancialReportEngine } from "./financial-report.engine.js";
+import { reportCacheService } from "./report-cache.service.js";
+import { ReportAuditService } from "./report-audit.service.js";
+import { ExportService, ExportOptions } from "./export.service.js";
+import { AuthorizationService } from "../rbac/authorization.service.js";
 
 export interface BuildReportRequest {
   reportType: ReportType;

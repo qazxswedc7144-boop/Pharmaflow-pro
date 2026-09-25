@@ -1,6 +1,6 @@
 // apps/api/src/modules/audit/audit.service.ts
-import { AuditRepository } from "./audit.repository";
-import { AuditLogPayload } from "./audit.types";
+import { AuditRepository } from "./audit.repository.js";
+import { AuditLogPayload } from "./audit.types.js";
 import crypto from "crypto";
 
 export class AuditService {

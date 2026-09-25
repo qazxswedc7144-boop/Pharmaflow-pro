@@ -1,10 +1,10 @@
 // server/modules/replication/replication.subscriber.ts
 
 import Redis, { RedisOptions } from "ioredis";
-import { prisma } from "../../database/prisma";
-import { localReplicationBus } from "./replication.publisher";
-import { ReplicationEvent } from "./replication.types";
-import { sanitizeRedisUrl } from "../../database/redis";
+import { prisma } from "../../database/prisma.js";
+import { localReplicationBus } from "./replication.publisher.js";
+import { ReplicationEvent } from "./replication.types.js";
+import { sanitizeRedisUrl } from "../../database/redis.js";
 
 let REDIS_URL = process.env.REDIS_URL ? process.env.REDIS_URL.trim().replace(/^['"]|['"]$/g, '') : "";
 

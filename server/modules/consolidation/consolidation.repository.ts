@@ -1,8 +1,8 @@
 // server/modules/consolidation/consolidation.repository.ts
 
-import { prisma } from "../../database/prisma";
+import { prisma } from "../../database/prisma.js";
 import { Branch, Product, InventoryMovement } from "@prisma/client";
-import { ConsolidationLogger } from "./consolidation.logger";
+import { ConsolidationLogger } from "./consolidation.logger.js";
 
 export class ConsolidationRepository {
   /**

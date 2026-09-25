@@ -1,8 +1,8 @@
 // server/modules/sync/sync-audit.service.ts
 // Audit Engine for Phase 8.3 Enterprise Synchronization Security
 
-import { SyncAuditEventType, SyncAuditLogRecord } from "./sync.types";
-import { prisma } from "../../database/prisma";
+import { SyncAuditEventType, SyncAuditLogRecord } from "./sync.types.js";
+import { prisma } from "../../database/prisma.js";
 
 export class SyncAuditService {
   private static auditLogs: SyncAuditLogRecord[] = [];

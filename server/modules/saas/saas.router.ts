@@ -1,7 +1,7 @@
 // server/modules/saas/saas.router.ts
 import { Router, Request, Response } from "express";
-import { SaasService } from "./saas.service";
-import { authenticateToken, AuthenticatedRequest } from "../../middleware/auth.middleware";
+import { SaasService } from "./saas.service.js";
+import { authenticateToken, AuthenticatedRequest } from "../../middleware/auth.middleware.js";
 import bcrypt from "bcryptjs";
 
 export const saasRouter = Router();

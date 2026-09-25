@@ -1,5 +1,5 @@
 // server/services/rbac/permission.service.ts
-import { StandardPermission, PermissionCacheEntry } from './types';
+import { StandardPermission, PermissionCacheEntry } from './types.js';
 
 export const ENTERPRISE_PERMISSIONS: StandardPermission[] = [
   // 1. Sales Module

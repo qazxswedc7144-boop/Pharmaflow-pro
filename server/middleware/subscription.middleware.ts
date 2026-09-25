@@ -1,7 +1,7 @@
 // server/middleware/subscription.middleware.ts
 import { Response, NextFunction } from "express";
-import { AuthenticatedRequest } from "./auth.middleware";
-import { SaasService } from "../modules/saas/saas.service";
+import { AuthenticatedRequest } from "./auth.middleware.js";
+import { SaasService } from "../modules/saas/saas.service.js";
 import jwt from "jsonwebtoken";
 
 const getJwtSecret = () => process.env.JWT_SECRET || 'pharmaflow-local-development-jwt-secure-secret-2026';

@@ -1,9 +1,9 @@
 // server/modules/consolidation/calculators/cash-flow.calculator.ts
 // Deterministic Cash Flow Statement (Zero 0.90 Multipliers, Zero Fake 50000 Starting Balances)
 
-import { FinancialMath } from "../financial-math";
-import { AggregatedLedgerState } from "./ledger-balance.calculator";
-import { ConsolidatedCashFlow, EliminationRecord } from "../consolidation.types";
+import { FinancialMath } from "../financial-math.js";
+import { AggregatedLedgerState } from "./ledger-balance.calculator.js";
+import { ConsolidatedCashFlow, EliminationRecord } from "../consolidation.types.js";
 
 export class CashFlowCalculator {
   /**

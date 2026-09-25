@@ -1,9 +1,9 @@
 // server/modules/locking/locking.service.ts
 
 import crypto from "crypto";
-import { prisma } from "../../database/prisma";
-import { RedisConnectionManager } from "../../database/redis";
-import { BackendLockAcquisitionOptions, RedisLockRecord } from "./locking.types";
+import { prisma } from "../../database/prisma.js";
+import { RedisConnectionManager } from "../../database/redis.js";
+import { BackendLockAcquisitionOptions, RedisLockRecord } from "./locking.types.js";
 
 /**
  * LockingService provides concurrency synchronization.

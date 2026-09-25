@@ -1,8 +1,8 @@
 // server/modules/sync/sync-changelog.service.ts
 // Change Log and Cursor-Based Delta Engine for Phase 8.3 Enterprise Synchronization
 
-import { SyncChange } from "./sync.types";
-import { prisma } from "../../database/prisma";
+import { SyncChange } from "./sync.types.js";
+import { prisma } from "../../database/prisma.js";
 
 export class SyncChangelogService {
   // In-memory change log ring buffer for high performance with durable storage

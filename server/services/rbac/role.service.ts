@@ -1,7 +1,7 @@
 // server/services/rbac/role.service.ts
-import { RoleDefinition, UserRoleBinding, UserPermissionOverrideItem } from './types';
-import { PermissionService, SYSTEM_ROLE_PERMISSIONS } from './permission.service';
-import { prisma } from '../../database/prisma';
+import { RoleDefinition, UserRoleBinding, UserPermissionOverrideItem } from './types.js';
+import { PermissionService, SYSTEM_ROLE_PERMISSIONS } from './permission.service.js';
+import { prisma } from '../../database/prisma.js';
 
 export class RoleService {
   // In-memory backing store for local/fast fallback or preview environments

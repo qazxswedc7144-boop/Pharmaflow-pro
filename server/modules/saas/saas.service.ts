@@ -1,5 +1,5 @@
 // server/modules/saas/saas.service.ts
-import { prisma } from "../../database/prisma";
+import { prisma } from "../../database/prisma.js";
 import { Role } from "@prisma/client";
 
 export class SaasService {

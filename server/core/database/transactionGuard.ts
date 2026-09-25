@@ -1,5 +1,5 @@
 // server/core/database/transactionGuard.ts
-import { prisma } from "../../../server/database/prisma";
+import { prisma } from "../../../server/database/prisma.js";
 import { Prisma } from "@prisma/client";
 
 /**

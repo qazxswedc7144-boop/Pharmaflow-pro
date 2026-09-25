@@ -1,10 +1,10 @@
 // apps/api/src/modules/auth/auth.routes.ts
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
-import { AuthController } from "./auth.controller";
-import { authMiddleware } from "./auth.middleware";
-import { LoginSchema, RefreshTokenSchema } from "./auth.schema";
-import { validateRequestBody } from "../../../../../server/middleware/validate";
+import { AuthController } from "./auth.controller.js";
+import { authMiddleware } from "./auth.middleware.js";
+import { LoginSchema, RefreshTokenSchema } from "./auth.schema.js";
+import { validateRequestBody } from "../../../../../server/middleware/validate.js";
 
 export const authV1Router = Router();
 

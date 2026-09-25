@@ -1,9 +1,9 @@
 // server/routes/ai.routes.ts
 import { Router, Response } from "express";
-import { authenticateToken, AuthenticatedRequest } from "../middleware/auth.middleware";
+import { authenticateToken, AuthenticatedRequest } from "../middleware/auth.middleware.js";
 import rateLimit from "express-rate-limit";
-import { prisma } from "../database/prisma";
-import { ServerAIPromptGuard } from "../services/ai-prompt-guard";
+import { prisma } from "../database/prisma.js";
+import { ServerAIPromptGuard } from "../services/ai-prompt-guard.js";
 
 export const aiRouter = Router();
 

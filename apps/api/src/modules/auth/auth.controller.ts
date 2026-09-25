@@ -1,9 +1,9 @@
 // apps/api/src/modules/auth/auth.controller.ts
 import { Response } from "express";
-import { AuthenticatedRequest } from "./auth.middleware";
-import { AuthService } from "./auth.service";
-import { AuditService } from "../audit/audit.service";
-import { prisma } from "../../../../../server/database/prisma";
+import { AuthenticatedRequest } from "./auth.middleware.js";
+import { AuthService } from "./auth.service.js";
+import { AuditService } from "../audit/audit.service.js";
+import { prisma } from "../../../../../server/database/prisma.js";
 
 export class AuthController {
   /**
