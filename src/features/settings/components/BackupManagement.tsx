@@ -753,8 +753,10 @@ const BackupManagement: React.FC = () => {
                     <Download size={18} />
                   </button>
                   <button 
+                    disabled={!backup.dataSnapshot || !backup.dataSnapshot.trim()}
                     onClick={() => handleRestore(backup.id)}
-                    className="flex items-center gap-2 px-4 py-2.5 bg-[#1E4D4D] text-white rounded-xl font-black text-xs hover:bg-slate-800 transition-all shadow-lg active:scale-95"
+                    className="flex items-center gap-2 px-4 py-2.5 bg-[#1E4D4D] text-white rounded-xl font-black text-xs hover:bg-slate-800 transition-all shadow-lg active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-[#1E4D4D] disabled:active:scale-100"
+                    title={!backup.dataSnapshot || !backup.dataSnapshot.trim() ? 'نسخة حديثة (.pfb) - يرجى استعادتها من مركز النسخ الاحتياطي' : undefined}
                   >
                     <RotateCcw size={14} /> استعادة النظام
                   </button>

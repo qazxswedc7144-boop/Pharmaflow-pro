@@ -91,7 +91,9 @@ async function startServer() {
     }, 500);
   }
 
-  const PORT = Number(process.env.PORT) || 3000;
+  // In this environment, Nginx reverse proxy listens on 8080 and forwards to 3000.
+  // The dev server / express app must always bind to port 3000.
+  const PORT = (process.env.PORT && process.env.PORT !== "8080") ? Number(process.env.PORT) : 3000;
   console.log(`[BOOT] Server configured to listen on PORT: ${PORT}`);
   
   if (process.env.NODE_ENV !== "production") {

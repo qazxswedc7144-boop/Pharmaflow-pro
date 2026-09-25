@@ -430,6 +430,14 @@ export const BackupService = {
       throw new Error('RESTORE_FAILED: Selected backup snapshot is missing or invalid.');
     }
 
+    if (!backup.dataSnapshot || !backup.dataSnapshot.trim()) {
+      throw new Error(
+        'RESTORE_UNSUPPORTED: لا يمكن استعادة هذه النسخة مباشرة؛ ' +
+        'تم إنشاؤها عبر نظام النسخ الحديث (.pfb). ' +
+        'يرجى استعادتها من مركز النسخ الاحتياطي.'
+      );
+    }
+
     const rollbackSnapshot = await this.collectFullSnapshot();
 
     try {
