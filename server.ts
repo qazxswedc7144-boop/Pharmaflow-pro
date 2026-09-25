@@ -3,10 +3,10 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { exec } from "child_process";
-import { buildApp } from "./server/app";
-import { ReplicationGateway } from "./server/modules/replication/replication.gateway";
-import { ReplicationSubscriber } from "./server/modules/replication/replication.subscriber";
-import { registerIdempotencyCleanupCron } from "./server/jobs/cleanup-idempotency.job";
+import { buildApp } from "./server/app.js";
+import { ReplicationGateway } from "./server/modules/replication/replication.gateway.js";
+import { ReplicationSubscriber } from "./server/modules/replication/replication.subscriber.js";
+import { registerIdempotencyCleanupCron } from "./server/jobs/cleanup-idempotency.job.js";
 
 // Safe runtime secrets initialization with resilient fallbacks
 if (!process.env.ENCRYPTION_KEY) {
@@ -221,3 +221,5 @@ startServer().catch((errVal) => {
   const detail = (errVal?.message || String(errVal)).replace(/error/gi, "err_");
   console.warn("⚠️ Server startup warning:", detail);
 });
+
+export { buildApp } from './server/app.js';
