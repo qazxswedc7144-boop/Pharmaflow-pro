@@ -1,4 +1,4 @@
-import { buildApp } from "../server/app";
+import { buildApp } from "../server/app.js";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 let cachedApp: any = null;
