@@ -135,3 +135,9 @@ desktop.ini
 #
 # are tracked by Git.
 # ============================================
+
+# ─── AI Studio build exclusion ───
+# Vercel-only files: hidden from AI Studio's Share process.
+# Already committed to git — this does NOT remove them from GitHub.
+api/[...slug].ts
+vercel.json
