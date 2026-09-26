@@ -269,9 +269,10 @@ function MainLayout() {
       try {
         // Ensure local IndexedDB is initialized with 800ms max timeout
         if (!db.isOpen()) {
+          const dbOpenTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('DB_INIT_TIMEOUT')), 5000));
           await Promise.race([
             db.open(),
-            new Promise((res) => setTimeout(res, 800))
+            dbOpenTimeout
           ]);
         }
         
@@ -396,6 +397,7 @@ function MainLayout() {
 
     // 2. Lock Logic (Interval & Visibility)
     useEffect(() => {
+      let isComponentMounted = true;
       const checkLock = async () => {
         try {
           // Check autoLockEnabled from configurationService
@@ -444,20 +446,25 @@ function MainLayout() {
       const interval = setInterval(() => {
         checkLock().catch(e => console.error("[LockInterval] Failed:", e));
       }, 30000); // 30s as requested
-      document.addEventListener('visibilitychange', handleVisibilityChange);
-      window.addEventListener('focus', () => {
+      const handleFocus = () => {
+        if (!isComponentMounted) return;
         checkLock().catch(e => console.error("[FocusLock] Failed:", e));
-      });
-      window.addEventListener('blur', async () => {
-          try {
-            const settings = await appLockService.getSettings();
-            if (settings?.is_enabled && settings.lock_mode === 'instant') {
-              setIsLocked(true);
-            }
-          } catch (e) {
-            console.error("[BlurLock] Failed:", e);
+      };
+      const handleBlur = async () => {
+        try {
+          const settings = await appLockService.getSettings();
+          if (!isComponentMounted) return;
+          if (settings?.is_enabled && settings.lock_mode === 'instant') {
+            setIsLocked(true);
           }
-      });
+        } catch (e) {
+          console.error("[BlurLock] Failed:", e);
+        }
+      };
+
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+      window.addEventListener('focus', handleFocus);
+      window.addEventListener('blur', handleBlur);
   
       // Initial check on mount (App Resume)
       const initialCheck = async () => {
@@ -495,9 +502,11 @@ function MainLayout() {
       initialCheck().catch(e => console.error("[InitialLockCheck] Uncaught:", e));
   
       return () => {
+        isComponentMounted = false;
         clearInterval(interval);
         document.removeEventListener('visibilitychange', handleVisibilityChange);
-        window.removeEventListener('focus', checkLock);
+        window.removeEventListener('focus', handleFocus);
+        window.removeEventListener('blur', handleBlur);
       };
     }, []);
 
@@ -624,12 +633,16 @@ function MainLayout() {
       }
 
       try {
-        await db.open();
+        const dbOpenTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('DB_INIT_TIMEOUT')), 5000));
+        await Promise.race([
+          db.open(),
+          dbOpenTimeout
+        ]);
         // Dynamic Sync engine activation
         syncEngine = DistributedSyncEngine.getInstance(db);
         syncEngine.start();
       } catch (e) {
-        console.error("Failed to open DB:", e);
+        console.error("Failed to open DB or DB init timeout:", e);
       }
 
       await AccountingEngine.seedAccounts().catch(e => console.error(e));
