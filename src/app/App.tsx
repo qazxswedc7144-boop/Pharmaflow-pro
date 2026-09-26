@@ -170,14 +170,13 @@ function MainLayout() {
       return false;
     };
 
-    window.addEventListener("unhandledrejection", (e) => {
-      e.preventDefault();
-      const reason = e.reason;
-      const details = reason instanceof Error ? {
-        message: reason.message,
-        stack: reason.stack
-      } : { reason: String(reason) };
-      console.warn("Cleared dynamic rejection:", details);
+    window.addEventListener("unhandledrejection", (event) => {
+      // ⚠️ DO NOT call event.preventDefault() — that hides the error.
+      const reason = event.reason;
+      console.error(
+        '[UnhandledRejection]',
+        reason?.stack || reason?.message || String(reason),
+      );
     });
   }, []);
   const [viewParams, setViewParams] = useState<any>(null); 
